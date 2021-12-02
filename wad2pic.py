@@ -1884,6 +1884,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
             colorMap = colorMapP
 
     if options["verbose"]:
+        print ("=" * 40)
         print ("Getting geometry: Done")
         print ("Statistics:", len(vertexes), len(linedefs),
                len(sidedefs), len(sectors), len(things),
@@ -2028,11 +2029,6 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
     # so it will not stop at one broken map,
     # when you generate "ALL" maps
     def genMapWithException(iWAD, mapName, pWAD, options):
-
-        if options["verbose"]:
-            print ("=" * 40)
-            print ("Starting map:", iWAD, mapName, pWAD)
-
 
         # When debug is on: just run the function
         if options["debug"]:
