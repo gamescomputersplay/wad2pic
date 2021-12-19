@@ -1,28 +1,12 @@
 from wad2pic import wad2pic 
 
-# These are settings for dimetric orthogonal projection
-# use no options for miilitary
-options = {
-    # Margins around the map
-    "margins": 300,
-    # Gamma correction of the final map
-    # .7 is to lighten it up a little, 1 to bypass
-    "gamma"  : .7,
-    # X and Y size of a wall (in relation to actual height)
-    "coefX"  : 0,
-    "coefY"  : .8,
-    # rotate, degrees clockwise. 0 - no rotation
-    "rotate": 30,
-    # scale alongY axis, to create isometric view
-    # 1 for no scaling
-    "scaleY": .8,
-    #"zStyle": True,
-    "debug" : False,
-    "verbose": True
-    }
-
-# Quiick test with Classic Hangar
-wad2pic("doom.wad", "E1M1", options=options)
+# Very basic usage example. Insert your values and uncomment the next line
+# wad2pic("DOOM2.WAD", "MAP01", "myawesomemap.wad")
 
 
+# List of parameters:
+# DOOM2.WAD: your iWAD file (most commonly DOOM2.WAD or doom.WAD)
+# MAP01: which map to use (MAP01, MAP02 or E1M1, E1M2 etc)
+# myawesomemap.wad: your custom WAD you wat to draw
 
+# For more options please check the wad2pic.py file
