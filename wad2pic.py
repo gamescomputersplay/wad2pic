@@ -2052,13 +2052,13 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
     if "gamma" not in options:
         options["gamma"] = .7
     if "coefX" not in options:
-        options["coefX"] = .25
+        options["coefX"] = 0
     if "coefY" not in options:
-        options["coefY"] = .5
+        options["coefY"] = .8
     if "rotate" not in options:
-        options["rotate"] = 0
+        options["rotate"] = 30
     if "scaleY" not in options:
-        options["scaleY"] = 1
+        options["scaleY"] = 0.8
     if "zStyle" not in options:
         options["zStyle"] = False
     if "verbose" not in options:
@@ -2079,45 +2079,60 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
 
 
 if __name__ == "__main__":
-    print ("This program generates isometric view of a Doom level " +
-           "from a WAD file")
-    print ('Basic Usage example:')
-    print ('import wad2pic')
-    print ('wad2pic.wad2pic("doom1.WAD", "E1M1")')
 
-    # Options example
-    '''
-    options = {
-        # Margins around the map
-        "margins": 300,
-        # Gamma correction of the final map
-        # .7 is to lighten it up a little, 1 to bypass
-        "gamma"  : .7,
-        # X and Y size of a wall (in relation to actual height)
-        "coefX"  : 0,
-        "coefY"  : .8,
-        # rotate, degrees clockwise. 0 - no rotation
-        "rotate": 30,
-        # scale alongY axis, to create isometric view
-        # 1 for no scaling
-        "scaleY": .8,
-        # use zDoom WAD rules for pWAD (similar to Hexen format)
-        "zStyle": False,
-        # if True, stop at errors, otherwise just ignore a faulty map
-        "verbose" : True
-        "debug" : True
-        }
-    '''
+    import argparse
+    
+    parser = argparse.ArgumentParser(description = "Generate a picture from Doom's waD file")
+    parser.add_argument('iwad', help="Doom's iWAD file, most common DOOM2.WAD or doom.WAD")
+    parser.add_argument('map', help="Map to use (ALL for all)")
+    parser.add_argument('pwad', help="Your custom pWAD (such as myawesomewad.WAD)")
+    args = parser.parse_args()
 
-    # Usage example:
-    '''
-    wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
-    '''
+    if args.iwad is not None and args.pwad is not None and args.map is not None:
+        wad2pic(args.iwad, args.map, args.pwad)
 
-    # wad2pic(iWAD, mapName, pWAD=None, options={})
-    # Attributes:
-    #   iWAD: main WAD (doom.WAD or DOOM2.WAD)
-    #   mapName" ("ExMy" or "MAPnn") - map to draw
-    #       mapName=="ALL" - generate all maps from the WAD
-    #   pWAD: mod WAD, optional
-    #   options: dict of options, see above for details, optional
+    else:
+        
+        print ("This program generates isometric view of a Doom level " +
+               "from a WAD file")
+        print ('Basic Usage example:')
+        print ('import wad2pic')
+        print ('wad2pic.wad2pic("doom1.WAD", "E1M1")')
+
+        # Options example
+        '''
+        options = {
+            # Margins around the map
+            "margins": 300,
+            # Gamma correction of the final map
+            # .7 is to lighten it up a little, 1 to bypass
+            "gamma"  : .7,
+            # X and Y size of a wall (in relation to actual height)
+            "coefX"  : 0,
+            "coefY"  : .8,
+            # rotate, degrees clockwise. 0 - no rotation
+            "rotate": 30,
+            # scale alongY axis, to create isometric view
+            # 1 for no scaling
+            "scaleY": .8,
+            # use zDoom WAD rules for pWAD (similar to Hexen format)
+            "zStyle": False,
+            # if True, stop at errors, otherwise just ignore a faulty map
+            "verbose" : True
+            "debug" : False
+            }
+        '''
+
+        # Usage example:
+        '''
+        wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
+
+
+        # wad2pic(iWAD, mapName, pWAD=None, options={})
+        # Attributes:
+        #   iWAD: main WAD (doom.WAD or DOOM2.WAD)
+        #   mapName" ("ExMy" or "MAPnn") - map to draw
+        #       mapName=="ALL" - generate all maps from the WAD
+        #   pWAD: mod WAD, optional
+        #   options: dict of options, see above for details, optional
+        '''
