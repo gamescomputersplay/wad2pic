@@ -34,9 +34,15 @@
 # - All graphics is read from scratch for each map
 #   Which is inefficient if you do "ALL" maps
 
-# - I suspect using SubSectors is way more efficient that doing the flood fill
-# - does not support multiple PWADs
+# - I suspect using SubSectors is way more efficient that doing the flood
+#   fill (so far I failed figuring out how to make it work)
 
+# TODO LIST:
+############
+# - multiple PWADs
+# - PK3
+# - "Zoom" parameter to scale down resulting file
+#   (to be able to handle larger maps)
 
 # Imports:
 ##########
@@ -449,9 +455,13 @@ def getBasicData(filename, mapName, zStyle=False):
         infoTable = readWADdirectory(fs, numLumps, infoTableOfs)
         mapsLumpsInfo = getMapsLumpsInfo(infoTable, mapName)
 
+        pallete = getPallete(fs, infoTable)
+        colorMap = getColorMap(fs, infoTable)
+
         # in map does not exist - leave
         if len(mapsLumpsInfo) == 0:
-            return False, False, False, False, False, False, False, False
+            return infoTable, False, False, False, False, \
+                    False, pallete, colorMap
 
         # get the geometry + pallete + color map
         vertexes = getVertixes(fs, mapsLumpsInfo)
@@ -459,9 +469,6 @@ def getBasicData(filename, mapName, zStyle=False):
         sidedefs = getSideDefs(fs, mapsLumpsInfo)
         sectors = getSectors(fs, mapsLumpsInfo)
         things = getThings(fs, mapsLumpsInfo, zStyle)
-
-        pallete = getPallete(fs, infoTable)
-        colorMap = getColorMap(fs, infoTable)
 
     return infoTable, vertexes, linedefs, sidedefs,\
         sectors, things, pallete, colorMap
@@ -580,7 +587,8 @@ def getPatchesNames(fs, infoTable):
             fs.seek(info[0])
             pNameLen = int.from_bytes(fs.read(4), "little", signed=True)
             for i in range(pNameLen):
-                patchesNames.append(trailingZeros(fs.read(8).decode("ISO-8859-1").upper()))
+                patchesNames.append(trailingZeros(
+                                    fs.read(8).decode("ISO-8859-1").upper()))
     return patchesNames
 
 
@@ -602,13 +610,13 @@ def getPicture(fs, infoTable, pictureNameOrig, pallete):
             if width > 2000 or height > 2000:
                 return None
             fs.read(4)
-            
+
             # This is a list of Posts (columns) that comprize an image
             postOffsets = []
             for w in range(width):
                 postOffsets.append(int.from_bytes(
                     fs.read(4), "little", signed=False))
-                
+
             # this is the image we will build from posts (columns)
             im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
             px = im.load()
@@ -616,7 +624,7 @@ def getPicture(fs, infoTable, pictureNameOrig, pallete):
             # Here we go go through all Posts
             for i in range(im.size[0]):
                 fs.seek(info[0] + postOffsets[i])
-                
+
                 # There is no fixed length of a post,
                 # post ends with the last byte=255
                 while True:
@@ -629,13 +637,13 @@ def getPicture(fs, infoTable, pictureNameOrig, pallete):
                     # Next byte is the length of data to read
                     length = int.from_bytes(
                         fs.read(1), "little", signed=False)
-                    
+
                     # Protection in case something goes wrong
                     # and we are at the EOF
                     # (removed cause it breaks otehr files)
                     # if length == 0:
                     #    return im
-                    
+
                     # First and last bytes are not used
                     fs.read(1)
                     # FInally, reading some pixel data
@@ -659,20 +667,19 @@ def getPictures(pictureNames, fs, infoTable, pallete):
     return pictures
 
 
-# FUnctions that deal with textures
+# Functions that deal with textures
 ###################################
 
 # Get info about all the textures
-# Which is texture data (name, width, hright)
-# and a list of patches and offsets.
+# Which is texture data (name, width, height, patches)
+# where "patches" is a list of patches and offsets:
+# [(offsetX, offsetY, patchN),..]
 # They will be put together into a texture in a different function
-# Returns a list of (textureName, width, height, [patches])
 def getTextureInfo(fs, infoTable):
     texturesInfo = []
     for info in infoTable:
         # It is stores in two lumps, names TEXTURE1 and TEXTURE2
-        # here we'll combine both
-        if "TEXTURE" in info[2]:
+        if info[2] == "TEXTURE1" or info[2] == "TEXTURE2":
             fs.seek(info[0])
             nTextures = int.from_bytes(fs.read(4), "little", signed=False)
             offsets = []
@@ -784,9 +791,9 @@ def flat2pic(flat):
     px = im.load()
     for i in range(width):
         for j in range(height):
-            px[i,j] = flat[i][j]
+            px[i, j] = flat[i][j]
     return im
-    
+
 
 # Functions to parse the map data, preparing for the drawing
 ############################################################
@@ -821,7 +828,7 @@ def checkHOM(vertexes, linedefs, sidedefs, sectors):
             if vertex < len(vertexes):
                 xs.append(vertexes[vertex].x)
                 ys.append(vertexes[vertex].y)
-        if len(xs)==0 or max(xs)-min(xs) < 2 or max(ys)-min(ys) < 2:
+        if len(xs) == 0 or max(xs) - min(xs) < 2 or max(ys) - min(ys) < 2:
             sector.HOMpassed = False
 
 
@@ -1146,7 +1153,7 @@ def findFloodPoint(linedef, vertexes, right=True):
     end = linedef.end
     if beg >= len(vertexes) or end >= len(vertexes):
         return -1000000, -1000000
-    
+
     x1 = vertexes[beg].x
     y1 = vertexes[beg].y
     x2 = vertexes[end].x
@@ -1296,7 +1303,7 @@ def getWallImage(wall, textures, colorConversion, scaleY):
         xOff -= textim.size[0]
     while xOff < -textim.size[0]:
         xOff += textim.size[0]
-        
+
     # Here we paste texture to the canvas
     # TODO: Calculate i and j more elegantly
     # I did budget 1 extra texture width to the left and 3 to the right
@@ -1493,12 +1500,12 @@ def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
 
                 # Check if the sprite is still within the picture
                 if picX < 0 or picX >= zBuffer.shape[0] or \
-                    picY <0 or picY >= zBuffer.shape[1]:
+                    picY < 0 or picY >= zBuffer.shape[1]:
                     continue
-                
+
                 # get zBuffer data
                 lastZ = zBuffer[picX, picY]
-                
+
                 # calculate physical coordinates (we only use physY, actually)
                 height = atHeight + j
                 physX = thing.x + offsetX
@@ -1602,7 +1609,6 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
     '''
 
     # Draw Linedefs on the blueprint
-    #for linedef in linedefs:
     for linedef in linedefs:
 
         if linedef.beg >= len(vertexes) or linedef.end >= len(vertexes):
@@ -1678,7 +1684,7 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
 
         for j in range(imSizeY):
             if sectorData[i, j] != -1:
-                
+
                 # prepare info about this sector:
                 sector = sectorData[i, j]
                 if sectors[sector].HOMpassed is False:
@@ -1731,7 +1737,8 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
 
     # Combine keys (distance) from Walls and Thing lists, iterate through them
     # The idea is to draw Walls and Things from the farthers to closest
-    combinesList = sorted(list(set(list(walls.keys()) + list(thingsList.keys()))))
+    combinesList = sorted(list(set(list(walls.keys()) +
+                            list(thingsList.keys()))))
     notches = [int(len(combinesList)/100*i) for i in range(100)]
     for n, distance in enumerate(combinesList):
         if n in notches and options["verbose"]:
@@ -1762,10 +1769,10 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                 # thing's coordinates, on the image
                 picX = thing.x + offsetX
                 picY = thing.y + offsetY
-                
+
                 # Check if the thing is within the picture
                 if picX < 0 or picX >= sectorData.shape[0] or \
-                    picY <0 or picY >= sectorData.shape[1]:
+                    picY < 0 or picY >= sectorData.shape[1]:
                     continue
 
                 # Sector this this sits on
@@ -1856,8 +1863,6 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # get iWAD data
     infoTable, vertexes, linedefs, sidedefs, sectors, \
         things, pallete, colorMap = getBasicData(iWAD, mapName)
-    if not infoTable and pWAD is None:   # map not found, no pWAD
-        return False
 
     # get pWAD data
     if pWAD is not None:
@@ -1898,16 +1903,14 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     scaleY = options["scaleY"]
     if scaleY != 1:
         applyScaleY(vertexes, things, scaleY)
-    
+
     # Check if sectors are valid (invalid may crash the program)
     checkHOM(vertexes, linedefs, sidedefs, sectors)
 
     # get Flats (textures of floors)
     listOfFlats = getListOfFlats(sectors)
-    flats = {}
-    if infoTable:
-        with open(iWAD, "rb") as fs:
-            flats = getFlats(fs, infoTable, listOfFlats, pallete)
+    with open(iWAD, "rb") as fs:
+        flats = getFlats(fs, infoTable, listOfFlats, pallete)
     # Update flats from pWAD
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
@@ -1915,11 +1918,10 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         flats.update(flatsP)
 
     # Get Patches (building blocks for wall textures)
-    #patches = {}
-    #if infoTable:
     with open(iWAD, "rb") as fs:
             patchesNames = getPatchesNames(fs, infoTable)
             patches = getPictures(patchesNames, fs, infoTable, pallete)
+
     # pWAD does not update, but replaces all patches
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
@@ -1930,8 +1932,6 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
                 patches.update(patchesP)
 
     # Get Textures
-    #textures = {}
-    #if infoTable:
     with open(iWAD, "rb") as fs:
             textureInfo = getTextureInfo(fs, infoTable)
             textures = getTextures(textureInfo, patches, patchesNames)
@@ -1950,15 +1950,16 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # Get things / sprites
     thingsList, spriteList = [], []
     sprites = {}
-    if infoTable:
-        with open(iWAD, "rb") as fs:
-            thingsList, spriteList = parceThings(things, infoTable, options, stats)
-            sprites = getPictures(spriteList, fs, infoTable, pallete)
+    with open(iWAD, "rb") as fs:
+        thingsList, spriteList = parceThings(things, infoTable, options, stats)
+        sprites = getPictures(spriteList, fs, infoTable, pallete)
+
     # Update things / sprites from pWAD
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
             if thingsList == [] and spriteList == []:
-                thingsList, spriteList = parceThings(things, infoTableP, options, stats)
+                thingsList, spriteList = \
+                        parceThings(things, infoTableP, options, stats)
             spritesP = getPictures(spriteList, fs, infoTableP, pallete)
         sprites.update(spritesP)
 
@@ -1971,7 +1972,6 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         print ("Statistics:", len(flats), len(patches),
                len(textures), len(walls), len(thingsList),
                len(sprites), len(colorConversion))
-
 
     # Draw the picture
     im = drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls, textures,
@@ -2081,58 +2081,65 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
 if __name__ == "__main__":
 
     import argparse
-    
-    parser = argparse.ArgumentParser(description = "Generate a picture from Doom's waD file")
-    parser.add_argument('iwad', help="Doom's iWAD file, most common DOOM2.WAD or doom.WAD")
-    parser.add_argument('map', help="Map to use (ALL for all)")
-    parser.add_argument('pwad', help="Your custom pWAD (such as myawesomewad.WAD)")
+
+    parser = argparse.ArgumentParser(description=
+                "Generate a picture from Doom's waD file")
+    parser.add_argument('iwad',
+            help="Doom's iWAD file, most common DOOM2.WAD or doom.WAD")
+    parser.add_argument('map',
+            help="Map to use (ALL for all)")
+    parser.add_argument('pwad',
+            help="Your custom pWAD (such as myawesomewad.WAD)")
     args = parser.parse_args()
 
-    if args.iwad is not None and args.pwad is not None and args.map is not None:
-        wad2pic(args.iwad, args.map, args.pwad)
+    if args.iwad is not None and \
+        args.pwad is not None and \
+        args.map is not None:
+            wad2pic(args.iwad, args.map, args.pwad)
 
     else:
-        
         print ("This program generates isometric view of a Doom level " +
                "from a WAD file")
-        print ('Basic Usage example:')
+        print ('\nBasic Usage example (command line):')
+        print ('>python3 wad2pic.py DOOM2.wad MAP01 mywad.wad')
+        print ('\nBasic Usage example (python):')
         print ('import wad2pic')
-        print ('wad2pic.wad2pic("doom1.WAD", "E1M1")')
+        print ('wad2pic.wad2pic("DOOM2.WAD", "MAP01", "mywad.wad")')
 
-        # Options example
-        '''
-        options = {
-            # Margins around the map
-            "margins": 300,
-            # Gamma correction of the final map
-            # .7 is to lighten it up a little, 1 to bypass
-            "gamma"  : .7,
-            # X and Y size of a wall (in relation to actual height)
-            "coefX"  : 0,
-            "coefY"  : .8,
-            # rotate, degrees clockwise. 0 - no rotation
-            "rotate": 30,
-            # scale alongY axis, to create isometric view
-            # 1 for no scaling
-            "scaleY": .8,
-            # use zDoom WAD rules for pWAD (similar to Hexen format)
-            "zStyle": False,
-            # if True, stop at errors, otherwise just ignore a faulty map
-            "verbose" : True
-            "debug" : False
-            }
-        '''
-
-        # Usage example:
-        '''
-        wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
+    # Usage example:
+    '''
+    wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
 
 
-        # wad2pic(iWAD, mapName, pWAD=None, options={})
-        # Attributes:
-        #   iWAD: main WAD (doom.WAD or DOOM2.WAD)
-        #   mapName" ("ExMy" or "MAPnn") - map to draw
-        #       mapName=="ALL" - generate all maps from the WAD
-        #   pWAD: mod WAD, optional
-        #   options: dict of options, see above for details, optional
-        '''
+    # wad2pic(iWAD, mapName, pWAD=None, options={})
+    # Attributes:
+    #   iWAD: main WAD (doom.WAD or DOOM2.WAD)
+    #   mapName" ("ExMy" or "MAPnn") - map to draw
+    #       mapName=="ALL" - generate all maps from the WAD
+    #   pWAD: mod WAD, optional
+    #   options: dict of options, see above for details, optional
+    '''
+
+    # Options example
+    '''
+    options = {
+        # Margins around the map
+        "margins": 300,
+        # Gamma correction of the final map
+        # .7 is to lighten it up a little, 1 to bypass
+        "gamma"  : .7,
+        # X and Y size of a wall (in relation to actual height)
+        "coefX"  : 0,
+        "coefY"  : .8,
+        # rotate, degrees clockwise. 0 - no rotation
+        "rotate": 30,
+        # scale alongY axis, to create isometric view
+        # 1 for no scaling
+        "scaleY": .8,
+        # use zDoom WAD rules for pWAD (similar to Hexen format)
+        "zStyle": False,
+        # if True, stop at errors, otherwise just ignore a faulty map
+        "verbose" : True
+        "debug" : False
+        }
+    '''
