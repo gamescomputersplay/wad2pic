@@ -69,6 +69,34 @@ def trailingZeros(name):
     return name
 
 
+# if the name is shorter than 8 bytes, padd it with "\x00"
+def addTrailingZeros(name):
+    if len(name) < 8:
+        return name + "\x00" * (8 - len(name))
+    return name
+
+
+# Class to hold a lump data
+class Lump:
+
+    def __init__(self, data):
+        self.data = data
+        self.position = 0
+        self.length = len(data)
+
+    def reset(self):
+        self.position = 0
+
+    def seek(self, newPosition):
+        self.position = newPosition
+
+    def read(self, nBytes):
+        newPosition = min(self.position + nBytes, len(self.data))
+        requestedData = self.data[self.position:newPosition]
+        self.position = newPosition
+        return requestedData
+
+
 # Classes definitions for main WAD's items:
 # vertixes, linedefs, sidedefs, sectors, things
 # (and some other classes that are not in WADs, but needed for this program)
@@ -277,170 +305,171 @@ def getMapsLumpsInfo(infoTable, mapName):
 # and return them as lists of objects
 #######################################################
 
-# Given list of map's lumps, return list of Vertexes
-def getVertixes(fs, mapsLumpsInfo):
+# Read Vertixes from lump data
+def getVertixes(lump):
     vertexes = []
-    for info in mapsLumpsInfo:
-        if "VERTEXES" in info[2]:
-            fs.seek(info[0])
-            for i in range(info[1]//4):
+    for i in range(lump.length//4):
 
-                x = int.from_bytes(fs.read(2), "little", signed=True)
-                # Note: Here I invert Y.
-                # This is because in WAD Y axis goes from bottom up,
-                # but in PIL it goes from up down
-                y = -int.from_bytes(fs.read(2), "little", signed=True)
+        x = int.from_bytes(lump.read(2), "little", signed=True)
+        # Note: Here I invert Y.
+        # This is because in WAD Y axis goes from bottom up,
+        # but in PIL it goes from up down
+        y = -int.from_bytes(lump.read(2), "little", signed=True)
 
-                # create new Vertex object, return list of Vertex objects
-                newVertex = Vertex(x, y)
-                vertexes.append(newVertex)
+        # create new Vertex object, return list of Vertex objects
+        newVertex = Vertex(x, y)
+        vertexes.append(newVertex)
 
-            return vertexes
+    return vertexes
 
 
-# Given list of map's lumps, return list of Linedefs
-def getLineDefs(fs, mapsLumpsInfo, zStyle=False):
+# Return list of Linedefs from a lump
+# zStyle flag switches zDoom new linedef format (similat to Hexen)
+def getLineDefs(lump, zStyle=False):
+    if lump is None:
+        return []
     linedefs = []
-    for info in mapsLumpsInfo:
-        if "LINEDEFS" in info[2]:
-            fs.seek(info[0])
-            lumpSize = 16 if zStyle else 14
-            for i in range(info[1]//lumpSize):
+    lineDefSize = 16 if zStyle else 14
+    for i in range(lump.length // lineDefSize):
 
-                # Beginning and end: vertex'es indexes
-                beg = int.from_bytes(fs.read(2), "little", signed=False)
-                end = int.from_bytes(fs.read(2), "little", signed=False)
+        # Beginning and end: vertex'es indexes
+        beg = int.from_bytes(lump.read(2), "little", signed=False)
+        end = int.from_bytes(lump.read(2), "little", signed=False)
 
-                # Bits that store various properties of a LineDef
-                # In our case, we only interested in two flags, see next lines
-                flags = int.from_bytes(fs.read(2), "little", signed=False)
-                # bit 3: unpegged top (see class description what it means)
-                topUnpegged = (flags & 8)//8
-                # bit 4: unpegged bottom
-                bottomUnpegged = (flags & 16)//16
-                fs.read(4)
-                if zStyle:
-                    fs.read(2)
+        # Bits that store various properties of a LineDef
+        # In our case, we only interested in two flags, see next lines
+        flags = int.from_bytes(lump.read(2), "little", signed=False)
+        # bit 3: unpegged top (see class description what it means)
+        topUnpegged = (flags & 8)//8
+        # bit 4: unpegged bottom
+        bottomUnpegged = (flags & 16)//16
+        lump.read(4)
+        if zStyle:
+            lump.read(2)
 
-                # front and back sidedefs of this linedef
-                front = int.from_bytes(fs.read(2), "little", signed=False)
-                back = int.from_bytes(fs.read(2), "little", signed=False)
+        # front and back sidedefs of this linedef
+        front = int.from_bytes(lump.read(2), "little", signed=False)
+        back = int.from_bytes(lump.read(2), "little", signed=False)
 
-                # create new LineDef object, return list of LineDef objects
-                newLinedef = LineDef(beg, end, front, back,
-                                     topUnpegged, bottomUnpegged)
-                linedefs.append(newLinedef)
+        # create new LineDef object, return list of LineDef objects
+        newLinedef = LineDef(beg, end, front, back,
+                             topUnpegged, bottomUnpegged)
+        linedefs.append(newLinedef)
 
-            return linedefs
+    return linedefs
 
 
-# Given list of map's lumps, return list of SideDefs
-def getSideDefs(fs, mapsLumpsInfo):
+# Return list of SideDefs from a lump
+def getSideDefs(lump):
+    if lump is None:
+        return []
     sidedefs = []
-    for info in mapsLumpsInfo:
-        if "SIDEDEFS" in info[2]:
-            fs.seek(info[0])
-            for i in range(info[1]//30):
+    for i in range(lump.length//30):
 
-                # Offsets to move the texture
-                xOffset = int.from_bytes(fs.read(2), "little", signed=True)
-                yOffset = int.from_bytes(fs.read(2), "little", signed=True)
+        # Offsets to move the texture
+        xOffset = int.from_bytes(lump.read(2), "little", signed=True)
+        yOffset = int.from_bytes(lump.read(2), "little", signed=True)
 
-                # names of textures for 3 parts of sidedef with some cleanup
-                # Cleanup includes:
-                # - decoding in ISO-8859-1
-                # (UTF-8 can result in an error, albeit rarely)
-                # - uppercase (some WADs mix lower and upper case that)
-                # - trailing characters after \x00 (it happens not too)
-                upper = trailingZeros(fs.read(8).decode("ISO-8859-1").upper())
-                lower = trailingZeros(fs.read(8).decode("ISO-8859-1").upper())
-                middle = trailingZeros(fs.read(8).decode("ISO-8859-1").upper())
+        # names of textures for 3 parts of sidedef with some cleanup
+        # Cleanup includes:
+        # - decoding in ISO-8859-1
+        # (UTF-8 can result in an error, albeit rarely)
+        # - uppercase (some WADs mix lower and upper case that)
+        # - trailing characters after \x00 (it happens not too)
+        upper = trailingZeros(lump.read(8).decode("ISO-8859-1").upper())
+        lower = trailingZeros(lump.read(8).decode("ISO-8859-1").upper())
+        middle = trailingZeros(lump.read(8).decode("ISO-8859-1").upper())
 
-                # sector that this sideDef faces
-                sector = int.from_bytes(fs.read(2), "little", signed=False)
+        # sector that this sideDef faces
+        sector = int.from_bytes(lump.read(2), "little", signed=False)
 
-                # create new SideDef object, return list of SideDef objects
-                newSideDef = SideDef(xOffset, yOffset,
-                                     upper, lower, middle, sector)
-                sidedefs.append(newSideDef)
+        # create new SideDef object, return list of SideDef objects
+        newSideDef = SideDef(xOffset, yOffset,
+                             upper, lower, middle, sector)
+        sidedefs.append(newSideDef)
 
-            return sidedefs
+    return sidedefs
 
 
-# Given list of map's lumps, return list of Sectors
-def getSectors(fs, mapsLumpsInfo):
+# Return list of Sectors
+def getSectors(lump):
+    if lump is None:
+        return []
     sectors = []
-    for info in mapsLumpsInfo:
-        if "SECTORS" in info[2] and "SS" not in info[2]:
-            fs.seek(info[0])
-            for i in range(info[1]//26):
+    for i in range(lump.length//26):
 
-                # Heights of the floor and the ceiling
-                floorHeight = int.from_bytes(
-                    fs.read(2), "little", signed=True)
-                ceilingHeight = int.from_bytes(
-                    fs.read(2), "little", signed=True)
-                # flats' (textures) names for the floor and the ceiling
-                floorTexture = trailingZeros(
-                    fs.read(8).decode("ISO-8859-1").upper())
-                ceilingTexture = trailingZeros(
-                    fs.read(8).decode("ISO-8859-1").upper())
-                # lighting level (0-255)
-                light = int.from_bytes(fs.read(2), "little", signed=True)
-                if light > 255:
-                    light = 255
-                if light < 0:
-                    light = 0
-                fs.read(4)
+        # Heights of the floor and the ceiling
+        floorHeight = int.from_bytes(lump.read(2), "little", signed=True)
+        ceilingHeight = int.from_bytes(lump.read(2), "little", signed=True)
+        # flats' (textures) names for the floor and the ceiling
+        floorTexture = trailingZeros(
+            lump.read(8).decode("ISO-8859-1").upper())
+        ceilingTexture = trailingZeros(
+            lump.read(8).decode("ISO-8859-1").upper())
+        # lighting level (0-255)
+        light = int.from_bytes(lump.read(2), "little", signed=True)
+        if light > 255:
+            light = 255
+        if light < 0:
+            light = 0
+        lump.read(4)
 
-                # create new Sector object, return list of Sector objects
-                newSector = Sector(floorHeight, ceilingHeight,
-                                   floorTexture, ceilingTexture, light)
-                sectors.append(newSector)
+        # create new Sector object, return list of Sector objects
+        newSector = Sector(floorHeight, ceilingHeight,
+                           floorTexture, ceilingTexture, light)
+        sectors.append(newSector)
 
-            return sectors
+    return sectors
 
 
 # Given list of map's lumps, return list of Things
-def getThings(fs, mapsLumpsInfo, zStyle=False):
+def getThings(lump, zStyle=False):
+    if lump is None:
+        return []
     things = []
-    for info in mapsLumpsInfo:
-        if "THINGS" in info[2]:
-            fs.seek(info[0])
-            thingSize = 20 if zStyle else 10
-            for i in range(info[1]//thingSize):
+    thingSize = 20 if zStyle else 10
+    for i in range(lump.length//thingSize):
 
-                if zStyle:
-                    fs.read(2)
-                    x = int.from_bytes(fs.read(2), "little", signed=True)
-                    y = -int.from_bytes(fs.read(2), "little", signed=True)
-                    fs.read(2)
-                    angle = int.from_bytes(fs.read(2), "little", signed=True)
-                    type = int.from_bytes(fs.read(2), "little", signed=True)
-                    options = int.from_bytes(fs.read(2), "little", signed=True)
-                    fs.read(6)
-                else:
-                    # Coordinates to place the thing at
-                    x = int.from_bytes(fs.read(2), "little", signed=True)
-                    # same reason for inverting Y as for vertices
-                    y = -int.from_bytes(fs.read(2), "little", signed=True)
+        if zStyle:
+            lump.read(2)
+            x = int.from_bytes(lump.read(2), "little", signed=True)
+            y = -int.from_bytes(lump.read(2), "little", signed=True)
+            lump.read(2)
+            angle = int.from_bytes(lump.read(2), "little", signed=True)
+            type = int.from_bytes(lump.read(2), "little", signed=True)
+            options = int.from_bytes(lump.read(2), "little", signed=True)
+            lump.read(6)
+        else:
+            # Coordinates to place the thing at
+            x = int.from_bytes(lump.read(2), "little", signed=True)
+            # same reason for inverting Y as for vertices
+            y = -int.from_bytes(lump.read(2), "little", signed=True)
 
-                    # 0-359. Angle at which it is rotated
-                    # 0 is East, then goes anti-clockwise
-                    angle = int.from_bytes(fs.read(2), "little", signed=True)
+            # 0-359. Angle at which it is rotated
+            # 0 is East, then goes anti-clockwise
+            angle = int.from_bytes(lump.read(2), "little", signed=True)
 
-                    # Thing's type (what is it)
-                    # List of types are later in the program
-                    type = int.from_bytes(fs.read(2), "little", signed=True)
+            # Thing's type (what is it)
+            # List of types are later in the program
+            type = int.from_bytes(lump.read(2), "little", signed=True)
 
-                    # bits, which difficulty, match type this thing appears at
-                    options = int.from_bytes(fs.read(2), "little", signed=True)
+            # bits, which difficulty, match type this thing appears at
+            options = int.from_bytes(lump.read(2), "little", signed=True)
 
-                # create new Thing object, return list of Thing objects
-                newThing = Thing(x, y, angle, type, options)
-                things.append(newThing)
+        # create new Thing object, return list of Thing objects
+        newThing = Thing(x, y, angle, type, options)
+        things.append(newThing)
 
     return things
+
+
+# Return lump's content (as bytes)
+def getLump(lumpName, fs, mapsLumpsInfo):
+    fixedLumpName = addTrailingZeros(lumpName)
+    for info in mapsLumpsInfo:
+        if info[2] == fixedLumpName:
+            fs.seek(info[0])
+            return Lump(fs.read(info[1]))
 
 
 # Putting it all together: given a WAD filename and a map name
@@ -455,20 +484,34 @@ def getBasicData(filename, mapName, zStyle=False):
         infoTable = readWADdirectory(fs, numLumps, infoTableOfs)
         mapsLumpsInfo = getMapsLumpsInfo(infoTable, mapName)
 
-        pallete = getPallete(fs, infoTable)
-        colorMap = getColorMap(fs, infoTable)
+        palleteLump = getLump("PLAYPAL", fs, infoTable)
+        pallete = getPallete(palleteLump)
+
+        colorMapLump = getLump("COLORMAP", fs, infoTable)
+        colorMap = getColorMap(colorMapLump)
 
         # in map does not exist - leave
         if len(mapsLumpsInfo) == 0:
+            # but return infotable and pallete and colormap
+            # it is needed for maps with non-standard names
             return infoTable, False, False, False, False, \
                     False, pallete, colorMap
 
         # get the geometry + pallete + color map
-        vertexes = getVertixes(fs, mapsLumpsInfo)
-        linedefs = getLineDefs(fs, mapsLumpsInfo, zStyle)
-        sidedefs = getSideDefs(fs, mapsLumpsInfo)
-        sectors = getSectors(fs, mapsLumpsInfo)
-        things = getThings(fs, mapsLumpsInfo, zStyle)
+        vertexesLump = getLump("VERTEXES", fs, mapsLumpsInfo)
+        vertexes = getVertixes(vertexesLump)
+
+        linedefsLump = getLump("LINEDEFS", fs, mapsLumpsInfo)
+        linedefs = getLineDefs(linedefsLump, zStyle)
+
+        sidedefsLump = getLump("SIDEDEFS", fs, mapsLumpsInfo)
+        sidedefs = getSideDefs(sidedefsLump)
+
+        sectorsLump = getLump("SECTORS", fs, mapsLumpsInfo)
+        sectors = getSectors(sectorsLump)
+
+        thingsLump = getLump("THINGS", fs, mapsLumpsInfo)
+        things = getThings(thingsLump, zStyle)
 
     return infoTable, vertexes, linedefs, sidedefs,\
         sectors, things, pallete, colorMap
@@ -534,33 +577,32 @@ def applyScaleY(vertexes, things, scaleY):
 # Get the pallete (256 colors used in the game)
 # Pallete is a list of 256 tuples,
 # each tuple has 3 0-255 integers (RGB color)
-def getPallete(fs, infoTable):
+def getPallete(lump):
+    if lump is None:
+        return []
     pallete = []
-    for info in infoTable:
-        if "PLAYPAL" in info[2]:
-            fs.seek(info[0])
-            for i in range(256):
-                pixel = []
-                for j in range(3):
-                    pixel.append(int.from_bytes(fs.read(1), "little",
-                                 signed=False))
-                pallete.append(tuple(pixel))
+    for i in range(256):
+        pixel = []
+        for j in range(3):
+            pixel.append(int.from_bytes(lump.read(1), "little",
+                         signed=False))
+        pallete.append(tuple(pixel))
     return pallete
 
 
 # Get the ColorMap
 # Color Map is used to map colors to new colors for various light levels
 # Returns list of 34 maps, each map is a list of indexes in pallete to map to
-def getColorMap(fs, infoTable):
+def getColorMap(lump):
+    if lump is None:
+        return []
+
     colorMap = []
-    for info in infoTable:
-        if "COLORMAP" in info[2]:
-            fs.seek(info[0])
-            for i in range(34):
-                colorMap.append([])
-                for j in range(256):
-                    colorMap[-1].append(int.from_bytes(fs.read(1), "little",
-                                        signed=False))
+    for i in range(34):
+        colorMap.append([])
+        for j in range(256):
+            colorMap[-1].append(int.from_bytes(lump.read(1), "little",
+                                signed=False))
     return colorMap
 
 
@@ -595,65 +637,63 @@ def getPatchesNames(fs, infoTable):
 # Given lump name of a picture, get that picture, stored in Doom picture format
 # Used for patches, sprites, title screens etc (but not flats)
 # Picture returned as a PIL.Image object
-def getPicture(fs, infoTable, pictureNameOrig, pallete):
-    pictureName = trailingZeros(pictureNameOrig)
-    for info in infoTable:
-        if pictureName == info[2]:
-            fs.seek(info[0])
+def getPicture(lump, pallete):
+    if lump is None:
+        return None
 
-            # Size of the final picture
-            width = int.from_bytes(fs.read(2), "little", signed=False)
-            height = int.from_bytes(fs.read(2), "little", signed=False)
+    # Size of the final picture
+    width = int.from_bytes(lump.read(2), "little", signed=False)
+    height = int.from_bytes(lump.read(2), "little", signed=False)
 
-            # Protection against some weird humongous things
-            # Although textures with 1024 width is a thing
-            if width > 2000 or height > 2000:
-                return None
-            fs.read(4)
+    # Protection against some weird humongous things
+    # Although textures with 1024 width is a thing
+    if width > 2000 or height > 2000:
+        return None
+    lump.read(4)
 
-            # This is a list of Posts (columns) that comprize an image
-            postOffsets = []
-            for w in range(width):
-                postOffsets.append(int.from_bytes(
-                    fs.read(4), "little", signed=False))
+    # This is a list of Posts (columns) that comprize an image
+    postOffsets = []
+    for w in range(width):
+        postOffsets.append(int.from_bytes(
+            lump.read(4), "little", signed=False))
 
-            # this is the image we will build from posts (columns)
-            im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            px = im.load()
+    # this is the image we will build from posts (columns)
+    im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    px = im.load()
 
-            # Here we go go through all Posts
-            for i in range(im.size[0]):
-                fs.seek(info[0] + postOffsets[i])
+    # Here we go go through all Posts
+    for i in range(im.size[0]):
+        lump.seek(postOffsets[i])
 
-                # There is no fixed length of a post,
-                # post ends with the last byte=255
-                while True:
-                    # if the first byte is not 255 - it is an offset
-                    topdelta = int.from_bytes(
-                        fs.read(1), "little", signed=False)
-                    # if it is 255 - end this post (column)
-                    if topdelta == 255:
-                        break
-                    # Next byte is the length of data to read
-                    length = int.from_bytes(
-                        fs.read(1), "little", signed=False)
+        # There is no fixed length of a post,
+        # post ends with the last byte=255
+        while True:
+            # if the first byte is not 255 - it is an offset
+            topdelta = int.from_bytes(
+                lump.read(1), "little", signed=False)
+            # if it is 255 - end this post (column)
+            if topdelta == 255:
+                break
+            # Next byte is the length of data to read
+            length = int.from_bytes(
+                lump.read(1), "little", signed=False)
 
-                    # Protection in case something goes wrong
-                    # and we are at the EOF
-                    # (removed cause it breaks otehr files)
-                    # if length == 0:
-                    #    return im
+            # Protection in case something goes wrong
+            # and we are at the EOF
+            # (removed cause it breaks otehr files)
+            # if length == 0:
+            #    return im
 
-                    # First and last bytes are not used
-                    fs.read(1)
-                    # FInally, reading some pixel data
-                    for j in range(length):
-                        pixel = int.from_bytes(
-                            fs.read(1), "little", signed=False)
-                        color = pallete[pixel]
-                        px[i, topdelta + j] = color
-                    fs.read(1)
-            return im
+            # First and last bytes are not used
+            lump.read(1)
+            # FInally, reading some pixel data
+            for j in range(length):
+                pixel = int.from_bytes(
+                    lump.read(1), "little", signed=False)
+                color = pallete[pixel]
+                px[i, topdelta + j] = color
+            lump.read(1)
+    return im
 
 
 # Get all the pictures in a list
@@ -661,7 +701,8 @@ def getPicture(fs, infoTable, pictureNameOrig, pallete):
 def getPictures(pictureNames, fs, infoTable, pallete):
     pictures = {}
     for pictureName in pictureNames:
-        im = getPicture(fs, infoTable, pictureName, pallete)
+        pictureLump = getLump(pictureName, fs, infoTable)
+        im = getPicture(pictureLump, pallete)
         if im is not None:
             pictures[pictureName] = im
     return pictures
@@ -777,13 +818,21 @@ def getListOfFlats(sectors):
 def getFlats(fs, infoTable, listOfFlats, pallete):
     flats = {}
     for flatName in listOfFlats:
-        rawFlat = getRawFlat(fs, infoTable, flatName)
-        if rawFlat is not None and len(rawFlat) >= 4096:
-            flatData = createFlat(rawFlat, pallete)
+        rawFlat = getLump(flatName, fs, infoTable)
+        if rawFlat is not None and len(rawFlat.data) == 4096:
+            flatData = createFlat(rawFlat.data, pallete)
             flats[flatName] = flatData
+        elif rawFlat is not None and len(rawFlat.data) != 4096 and \
+                                    len(rawFlat.data) != 0:
+            flatPic = getPicture(rawFlat, pallete)
+            if flatPic is not None:
+                flat = pic2flat(flatPic)
+                flats[flatName] = flat
     return flats
 
 
+# couple of helper functions to transform flats (arrays of tuples)
+# into PIL's images (pics) and back
 def flat2pic(flat):
     width = len(flat)
     height = len(flat[0])
@@ -793,6 +842,20 @@ def flat2pic(flat):
         for j in range(height):
             px[i, j] = flat[i][j]
     return im
+
+
+def pic2flat(pic):
+    width = pic.size[0]
+    height = pic.size[1]
+    px = pic.load()
+    flat = []
+    for i in range(width):
+        flat.append([])
+        for j in range(height):
+            # copying this way to remove 4th element of px tuple
+            newpix = (px[i, j][0], px[i, j][1], px[i, j][2])
+            flat[-1].append(newpix)
+    return flat
 
 
 # Functions to parse the map data, preparing for the drawing
@@ -1722,7 +1785,9 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
 
                     # use those transformed back coordinates to get flat's
                     # pixel reversed X and Y (because of teh way we read it)
-                    rawColor = flats[flat][originalY % 64][originalX % 64]
+                    flatH = len(flats[flat])
+                    flatW = len(flats[flat][0])
+                    rawColor = flats[flat][originalY % flatH][originalX % flatW]
                     # apply lighting level
                     litColor = colorConversion[light][rawColor]
                     # draw, update the zBuffer
@@ -1891,9 +1956,8 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     if options["verbose"]:
         print ("=" * 40)
         print ("Getting geometry: Done")
-        print ("Statistics:", len(vertexes), len(linedefs),
-               len(sidedefs), len(sectors), len(things),
-               len(pallete), len(colorMap))
+        print (f"Stat: {len(vertexes)} vrt, {len(linedefs)} lnd, "+
+               f"{len(sidedefs)} sdf, {len(sectors)} sct, {len(things)} thn")
     # Rotate vertixes and things
     rotate = options["rotate"]
     if rotate != 0:
@@ -1921,8 +1985,6 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     with open(iWAD, "rb") as fs:
             patchesNames = getPatchesNames(fs, infoTable)
             patches = getPictures(patchesNames, fs, infoTable, pallete)
-
-    # pWAD does not update, but replaces all patches
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
             patchesNamesP = getPatchesNames(fs, infoTableP)
@@ -1935,7 +1997,6 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     with open(iWAD, "rb") as fs:
             textureInfo = getTextureInfo(fs, infoTable)
             textures = getTextures(textureInfo, patches, patchesNames)
-    # Same as patches, textures can only be updated fully
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
             textureInfoP = getTextureInfo(fs, infoTableP)
@@ -1969,9 +2030,9 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
 
     if options["verbose"]:
         print ("Getting assets: Done")
-        print ("Statistics:", len(flats), len(patches),
-               len(textures), len(walls), len(thingsList),
-               len(sprites), len(colorConversion))
+        print (f"Stat: {len(flats)} flt, {len(patches)} pch, " +
+               f"{len(textures)} txt, {len(walls)} wls, " +
+               f"{len(thingsList)} thg, {len(sprites)} spr")
 
     # Draw the picture
     im = drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls, textures,
@@ -2006,10 +2067,12 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
 
     # Get TitlePic
     with open(iWAD, "rb") as fs:
-        titlepic = getPicture(fs, infoTable, "TITLEPIC", pallete)
+        pictureLump = getLump("TITLEPIC", fs, infoTable)
+        titlepic = getPicture(pictureLump, pallete)
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
-            titlepic = getPicture(fs, infoTableP, "TITLEPIC", pallete)
+            pictureLump = getLump("TITLEPIC", fs, infoTableP)
+            titlepic = getPicture(pictureLump, pallete)
 
     # Draw/write statistics info in the final image
     drawStats(im, titlepic, stats)
@@ -2080,12 +2143,17 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
 
 if __name__ == "__main__":
 
+    # If called directly, assume this is a CLI usage case
+    # CLI usage works like this:
+    # >python wad2pic.py iWAD mapN pWAD
+    # (all parameters mandatory)
+    
     import argparse
 
     parser = argparse.ArgumentParser(description=
                 "Generate a picture from Doom's waD file")
     parser.add_argument('iwad',
-            help="Doom's iWAD file, most common DOOM2.WAD or doom.WAD")
+            help="Doom's iWAD file, most commonly DOOM2.WAD or doom.WAD")
     parser.add_argument('map',
             help="Map to use (ALL for all)")
     parser.add_argument('pwad',
@@ -2106,22 +2174,20 @@ if __name__ == "__main__":
         print ('import wad2pic')
         print ('wad2pic.wad2pic("DOOM2.WAD", "MAP01", "mywad.wad")')
 
-    # Usage example:
     '''
+    Usage example:
+
     wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
 
+    Attributes:
+    wad2pic(iWAD, mapName, pWAD=None, options={})
+    - iWAD: main WAD (doom.WAD or DOOM2.WAD)
+    - mapName: ("ExMy" or "MAPnn") - which map to draw
+    - pWAD: mod WAD, optional
+    - options: dict of options, see below for details, optional
 
-    # wad2pic(iWAD, mapName, pWAD=None, options={})
-    # Attributes:
-    #   iWAD: main WAD (doom.WAD or DOOM2.WAD)
-    #   mapName" ("ExMy" or "MAPnn") - map to draw
-    #       mapName=="ALL" - generate all maps from the WAD
-    #   pWAD: mod WAD, optional
-    #   options: dict of options, see above for details, optional
-    '''
+    Options example:
 
-    # Options example
-    '''
     options = {
         # Margins around the map
         "margins": 300,
