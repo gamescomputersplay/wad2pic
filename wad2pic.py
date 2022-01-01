@@ -1988,10 +1988,14 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     if pWAD is not None:
         with open(pWAD, "rb") as fs:
             patchesNamesP = getPatchesNames(fs, infoTableP)
-            if len(patchesNamesP) > 0:
-                patchesP = getPictures(patchesNamesP, fs, infoTableP, pallete)
-                patchesNames = patchesNamesP
-                patches.update(patchesP)
+            # If there is no PNAMES lump,
+            # we still want to check for the patches, in case they are
+            # redefined in the pWAD
+            if len(patchesNamesP) == 0:
+                patchesNamesP = patchesNames
+            patchesP = getPictures(patchesNamesP, fs, infoTableP, pallete)
+            patchesNames = patchesNamesP
+            patches.update(patchesP)
 
     # Get Textures
     with open(iWAD, "rb") as fs:
