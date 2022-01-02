@@ -47,8 +47,12 @@
 # Imports:
 ##########
 
+import time
+
 # Image library to create and manutulate images
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFile
+# This to make it read internal PNG files (otherwise throws an error)
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Some basic functions: square, trigonometry fo rotations
 import math
@@ -75,6 +79,13 @@ def addTrailingZeros(name):
         return name + "\x00" * (8 - len(name))
     return name
 
+
+# remove trailing \x00s
+def removeTrailingZeros(name):
+    for i, char in enumerate(name):
+        if char == "\x00":
+            return name[:i]
+    return name
 
 # Class to hold a lump data
 class Lump:
@@ -819,11 +830,20 @@ def getFlats(fs, infoTable, listOfFlats, pallete):
     flats = {}
     for flatName in listOfFlats:
         rawFlat = getLump(flatName, fs, infoTable)
-        if rawFlat is not None and len(rawFlat.data) == 4096:
+        if rawFlat is None:
+            continue
+        if rawFlat.data[1:4] == b'PNG':
+            # I can't find a way to create an imagee from a PNG bytestring
+            # So I just save it and read it back
+            with open("wad2pic-tmp.png", "wb") as tmpfile:
+                tmpfile.write(rawFlat.data)
+            flatPic = Image.open("wad2pic-tmp.png")
+            flat = pic2flat(flatPic)
+            flats[flatName] = flat
+        elif len(rawFlat.data) == 4096:
             flatData = createFlat(rawFlat.data, pallete)
             flats[flatName] = flatData
-        elif rawFlat is not None and len(rawFlat.data) != 4096 and \
-                                    len(rawFlat.data) != 0:
+        elif len(rawFlat.data) != 0:
             flatPic = getPicture(rawFlat, pallete)
             if flatPic is not None:
                 flat = pic2flat(flatPic)
@@ -1532,7 +1552,8 @@ def makeTransparentSprite(sprite, px2, x, y, colorConversion):
 # Draw a thing on the final image
 def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
                offsetX, offsetY, colorConversion):
-
+    if thing.sprite not in sprites:
+        return
     sprite = sprites[thing.sprite].copy()
 
     # Mirror if needed
@@ -1579,6 +1600,15 @@ def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
                     zBuffer[picX, picY] = physY
 
     sprite.close()
+
+# in case it's a PNG, not a Doom image, to apply lighting we just
+# make a pixel a little darker
+# light: 0 - no change. 31 - black
+def darkenPixel(pixel, light):
+    newpixel = []
+    for i in range(3):
+        newpixel.append(int(pixel[i]*((31-light)/31)))
+    return tuple(newpixel)
 
 
 # Do the actual drawing
@@ -1788,8 +1818,16 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                     flatH = len(flats[flat])
                     flatW = len(flats[flat][0])
                     rawColor = flats[flat][originalY % flatH][originalX % flatW]
+                    
                     # apply lighting level
-                    litColor = colorConversion[light][rawColor]
+                    # Either from color conversion mapping table
+                    if rawColor in colorConversion[light]:
+                        litColor = colorConversion[light][rawColor]
+                    # Or just proportinally converting the pixel values
+                    # (for PNG's, that do not follow conversion table)
+                    else:
+                        litColor = darkenPixel(rawColor, light)
+                        
                     # draw, update the zBuffer
                     px2[i - hx, j - hy] = litColor
                     zBuffer[i - hx, j - hy] = j
