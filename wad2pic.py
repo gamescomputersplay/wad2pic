@@ -87,6 +87,7 @@ def removeTrailingZeros(name):
             return name[:i]
     return name
 
+
 # Class to hold a lump data
 class Lump:
 
@@ -106,6 +107,99 @@ class Lump:
         requestedData = self.data[self.position:newPosition]
         self.position = newPosition
         return requestedData
+
+
+# Class to read various level information lumps from a WAD
+##############################################################
+class WADData:
+
+    # open WAD file, read Lump table
+    def __init__(self, filename):
+        self.fs = open(filename, "rb")
+        
+        # read main info
+        self.wadType, self.numLumps, self.infoTableOfs = self.readWADinfo()
+        self.infoTable = self.readWADdirectory()
+        self.mapInfoTable = []
+
+        
+    # read and return WAD's basic info:
+    # WAD type, nukmber of lumps, address of the Directory
+    def readWADinfo(self):
+        # String: either "IWAD" (main game) or "PWAD" (extra content)
+        wadType = self.fs.read(4).decode("utf-8")
+        # Total number of lumps (pieces of info)
+        numLumps = int.from_bytes(self.fs.read(4), "little", signed=True)
+        # Offset where the directory (list of lumps) begins
+        infoTableOfs = int.from_bytes(self.fs.read(4), "little", signed=True)
+        return wadType, numLumps, infoTableOfs
+
+
+    # Given the position of the directory and number of lumps,
+    # read WAD's directory, return a list of lumps as (position, size, name)
+    def readWADdirectory(self):
+        self.fs.seek(self.infoTableOfs)
+        infoTable = []
+        for i in range(self.numLumps):
+
+            # for each entry in the directory, read:
+            # Offset (position) of this lump
+            filePos = int.from_bytes(self.fs.read(4), "little", signed=True)
+            # Size of this lumps, in bytes
+            size = int.from_bytes(self.fs.read(4), "little", signed=True)
+            # Name of this lump (will be padded by \x00, if sorter than 8 bytes)
+            lumpName = self.fs.read(8).decode("utf-8")
+            infoTable.append([filePos, size, lumpName])
+
+        return infoTable
+
+    # Given the map name, get all correspondent lumps list
+    # that is, vertixes, linedefs, sidedefs, sectors, things
+    # and a few other things that I am not using
+    def setMap(self, mapName):
+        
+        # Is this string a potential Map name (ExMy or MAPnn)?
+        # This is needed to locate lumps belonging to a particular map
+        def isMapName(text):
+            if text[0] == "E" and text[1] in "0123456789" \
+                            and text[2] == "M" and text[3] in "0123456789":
+                return True
+            if text[0:3] == "MAP" and text[3] in "0123456789" \
+                            and text[4] in "0123456789":
+                return True
+            return False
+    
+        foundMap = False
+        self.mapInfoTable = []
+        for info in self.infoTable:
+
+            # If the name is the map name we need: start copying
+            if isMapName(info[2]) and mapName in info[2]:
+                foundMap = True
+            # If it is the map name, but not the one we need: stop copying
+            if isMapName(info[2]) and mapName not in info[2]:
+                foundMap = False
+            # Copy the level lumps to a separate list
+            if foundMap:
+                self.mapInfoTable.append(info)
+
+        return len(self.mapInfoTable) > 0
+
+    # Return lump's content (as bytes)
+    def getLump(self, lumpName):
+        lumpInfo = self.infoTable
+        if lumpName in ["VERTEXES", "LINEDEFS", "SIDEDEFS", "SECTORS", "THINGS"]:
+            lumpInfo = self.mapInfoTable
+        fixedLumpName = addTrailingZeros(lumpName)
+        for info in lumpInfo:
+            if info[2] == fixedLumpName:
+                self.fs.seek(info[0])
+                return Lump(self.fs.read(info[1]))
+            
+    # clean up, close the file
+    def __del__(self):
+        self.fs.close()
+
 
 
 # Classes definitions for main WAD's items:
@@ -245,71 +339,7 @@ class Wall:
         self.isBack = isBack
 
 
-# Functions to read various level information lumps from a WAD
-##############################################################
 
-# read and return WAD's basic info:
-# WAD type, nukmber of lumps, address of the Directory
-def readWADinfo(fs):
-    # String: either "IWAD" (main game) or "PWAD" (extra content)
-    wadType = fs.read(4).decode("utf-8")
-    # Total number of lumps (pieces of info)
-    numLumps = int.from_bytes(fs.read(4), "little", signed=True)
-    # Offset where the directory (list of lumps) begins
-    infoTableOfs = int.from_bytes(fs.read(4), "little", signed=True)
-    return wadType, numLumps, infoTableOfs
-
-
-# Given the position of the directory and number of lumps,
-# read WAD's directory, return a list of lumps as (position, size, name)
-def readWADdirectory(fs, numLumps, infoTableOfs):
-    fs.seek(infoTableOfs)
-    infoTable = []
-    for i in range(numLumps):
-
-        # for each entry in the directory, read:
-        # Offset (position) of this lump
-        filePos = int.from_bytes(fs.read(4), "little", signed=True)
-        # Size of this lumps, in bytes
-        size = int.from_bytes(fs.read(4), "little", signed=True)
-        # Name of this lump (will be padded by \x00, if sorter than 8 bytes)
-        lumpName = fs.read(8).decode("utf-8")
-        infoTable.append([filePos, size, lumpName])
-
-    return infoTable
-
-
-# Is this string a potential Map name (ExMy or MAPnn)?
-# This is needed to locate lumps belonging to a particular map
-def isMapName(text):
-    if text[0] == "E" and text[1] in "0123456789" \
-                    and text[2] == "M" and text[3] in "0123456789":
-        return True
-    if text[0:3] == "MAP" and text[3] in "0123456789" \
-                    and text[4] in "0123456789":
-        return True
-    return False
-
-
-# Given the map name, get all correspondent lumps list
-# that is, vertixes, linedefs, sidedefs, sectors, things
-# and a few other things that I am not using
-def getMapsLumpsInfo(infoTable, mapName):
-    foundMap = False
-    mapsLumpsInfo = []
-    for info in infoTable:
-
-        # If the name is the map name we need: start copying
-        if isMapName(info[2]) and mapName in info[2]:
-            foundMap = True
-        # If it is the map name, but not the one we need: stop copying
-        if isMapName(info[2]) and mapName not in info[2]:
-            foundMap = False
-        # Copy the level lumps to a separate list
-        if foundMap:
-            mapsLumpsInfo.append(info)
-
-    return mapsLumpsInfo
 
 
 # Functions to read main lumps (vertixes, linedefs etc)
@@ -474,57 +504,34 @@ def getThings(lump, zStyle=False):
     return things
 
 
-# Return lump's content (as bytes)
-def getLump(lumpName, fs, mapsLumpsInfo):
-    fixedLumpName = addTrailingZeros(lumpName)
-    for info in mapsLumpsInfo:
-        if info[2] == fixedLumpName:
-            fs.seek(info[0])
-            return Lump(fs.read(info[1]))
+
 
 
 # Putting it all together: given a WAD filename and a map name
 # get all main level geometry data
 # (this does not include graphics: flats, textures, sprites)
-def getBasicData(filename, mapName, zStyle=False):
+def getBasicData(wad, zStyle=False):
 
-    with open(filename, "rb") as fs:
 
-        # read main info
-        wadType, numLumps, infoTableOfs = readWADinfo(fs)
-        infoTable = readWADdirectory(fs, numLumps, infoTableOfs)
-        mapsLumpsInfo = getMapsLumpsInfo(infoTable, mapName)
+    pallete = getPallete(wad.getLump("PLAYPAL"))
+    colorMap = getColorMap(wad.getLump("COLORMAP"))
 
-        palleteLump = getLump("PLAYPAL", fs, infoTable)
-        pallete = getPallete(palleteLump)
+    # in map does not exist - leave
+    if len(wad.mapInfoTable) == 0:
+        # but return infotable and pallete and colormap
+        # it is needed for maps with non-standard names
+        return False, False, False, False, \
+                False, pallete, colorMap
 
-        colorMapLump = getLump("COLORMAP", fs, infoTable)
-        colorMap = getColorMap(colorMapLump)
+    # otherwise get the geometry + pallete + color map
 
-        # in map does not exist - leave
-        if len(mapsLumpsInfo) == 0:
-            # but return infotable and pallete and colormap
-            # it is needed for maps with non-standard names
-            return infoTable, False, False, False, False, \
-                    False, pallete, colorMap
+    vertexes = getVertixes(wad.getLump("VERTEXES"))
+    linedefs = getLineDefs(wad.getLump("LINEDEFS"), zStyle)
+    sidedefs = getSideDefs(wad.getLump("SIDEDEFS"))
+    sectors = getSectors(wad.getLump("SECTORS"))
+    things = getThings(wad.getLump("THINGS"), zStyle)
 
-        # get the geometry + pallete + color map
-        vertexesLump = getLump("VERTEXES", fs, mapsLumpsInfo)
-        vertexes = getVertixes(vertexesLump)
-
-        linedefsLump = getLump("LINEDEFS", fs, mapsLumpsInfo)
-        linedefs = getLineDefs(linedefsLump, zStyle)
-
-        sidedefsLump = getLump("SIDEDEFS", fs, mapsLumpsInfo)
-        sidedefs = getSideDefs(sidedefsLump)
-
-        sectorsLump = getLump("SECTORS", fs, mapsLumpsInfo)
-        sectors = getSectors(sectorsLump)
-
-        thingsLump = getLump("THINGS", fs, mapsLumpsInfo)
-        things = getThings(thingsLump, zStyle)
-
-    return infoTable, vertexes, linedefs, sidedefs,\
+    return vertexes, linedefs, sidedefs,\
         sectors, things, pallete, colorMap
 
 
@@ -633,15 +640,14 @@ def genColorConversion(pallete, colorMap):
 
 # Get names of patches (texture parts)
 # They all are stored in PNAMES lump and will be referenced by ID, not names
-def getPatchesNames(fs, infoTable):
+def getPatchesNames(lump):
     patchesNames = []
-    for info in infoTable:
-        if "PNAMES" in info[2]:
-            fs.seek(info[0])
-            pNameLen = int.from_bytes(fs.read(4), "little", signed=True)
-            for i in range(pNameLen):
-                patchesNames.append(trailingZeros(
-                                    fs.read(8).decode("ISO-8859-1").upper()))
+    if lump is None:
+        return []
+    pNameLen = int.from_bytes(lump.read(4), "little", signed=True)
+    for i in range(pNameLen):
+        patchesNames.append(trailingZeros(
+                            lump.read(8).decode("ISO-8859-1").upper()))
     return patchesNames
 
 
@@ -709,10 +715,10 @@ def getPicture(lump, pallete):
 
 # Get all the pictures in a list
 # Returns a dictionary, where key is the picture's name and value is PIL.Image
-def getPictures(pictureNames, fs, infoTable, pallete):
+def getPictures(wad, pictureNames, pallete):
     pictures = {}
     for pictureName in pictureNames:
-        pictureLump = getLump(pictureName, fs, infoTable)
+        pictureLump = wad.getLump(pictureName)
         im = getPicture(pictureLump, pallete)
         if im is not None:
             pictures[pictureName] = im
@@ -727,35 +733,32 @@ def getPictures(pictureNames, fs, infoTable, pallete):
 # where "patches" is a list of patches and offsets:
 # [(offsetX, offsetY, patchN),..]
 # They will be put together into a texture in a different function
-def getTextureInfo(fs, infoTable):
+def getTextureInfo(lump):
+    if lump is None:
+        return []
     texturesInfo = []
-    for info in infoTable:
-        # It is stores in two lumps, names TEXTURE1 and TEXTURE2
-        if info[2] == "TEXTURE1" or info[2] == "TEXTURE2":
-            fs.seek(info[0])
-            nTextures = int.from_bytes(fs.read(4), "little", signed=False)
-            offsets = []
-            for i in range(nTextures):
-                offsets.append(int.from_bytes(
-                    fs.read(4), "little", signed=False))
-            for offset in offsets:
-                fs.seek(info[0]+offset)
-                textureName = trailingZeros(fs.read(8).decode("ISO-8859-1"))
-                fs.read(4)
-                width = int.from_bytes(fs.read(2), "little", signed=False)
-                height = int.from_bytes(fs.read(2), "little", signed=False)
-                fs.read(4)
-                patchCount = int.from_bytes(fs.read(2), "little", signed=False)
+    nTextures = int.from_bytes(lump.read(4), "little", signed=False)
+    offsets = []
+    for i in range(nTextures):
+        offsets.append(int.from_bytes(lump.read(4), "little", signed=False))
+    for offset in offsets:
+        lump.seek(offset)
+        textureName = trailingZeros(lump.read(8).decode("ISO-8859-1"))
+        lump.read(4)
+        width = int.from_bytes(lump.read(2), "little", signed=False)
+        height = int.from_bytes(lump.read(2), "little", signed=False)
+        lump.read(4)
+        patchCount = int.from_bytes(lump.read(2), "little", signed=False)
 
-                patches = []
-                for i in range(patchCount):
-                    offsetX = int.from_bytes(fs.read(2), "little", signed=True)
-                    offsetY = int.from_bytes(fs.read(2), "little", signed=True)
-                    patchN = int.from_bytes(fs.read(2), "little", signed=False)
-                    fs.read(4)
-                    patches.append((offsetX, offsetY, patchN))
+        patches = []
+        for i in range(patchCount):
+            offsetX = int.from_bytes(lump.read(2), "little", signed=True)
+            offsetY = int.from_bytes(lump.read(2), "little", signed=True)
+            patchN = int.from_bytes(lump.read(2), "little", signed=False)
+            lump.read(4)
+            patches.append((offsetX, offsetY, patchN))
 
-                texturesInfo.append((textureName, width, height, patches))
+        texturesInfo.append((textureName, width, height, patches))
 
     return texturesInfo
 
@@ -826,10 +829,10 @@ def getListOfFlats(sectors):
 
 # Given list of flats, return dictionary of flats data (R,G,B) list
 # {flatName: [[(R,G,B), (R,G,B), ...], [],[], ...]}
-def getFlats(fs, infoTable, listOfFlats, pallete):
+def getFlats(wad, listOfFlats, pallete):
     flats = {}
     for flatName in listOfFlats:
-        rawFlat = getLump(flatName, fs, infoTable)
+        rawFlat = wad.getLump(flatName)
         if rawFlat is None:
             continue
         if rawFlat.data[1:4] == b'PNG':
@@ -1964,16 +1967,20 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     stats = {}
 
     # get iWAD data
-    infoTable, vertexes, linedefs, sidedefs, sectors, \
-        things, pallete, colorMap = getBasicData(iWAD, mapName)
+    iData = WADData(iWAD)
+    iData.setMap(mapName)
+    vertexes, linedefs, sidedefs, sectors, \
+        things, pallete, colorMap = getBasicData(iData)
 
     # get pWAD data
+
     if pWAD is not None:
+        pData = WADData(pWAD)
+        pData.setMap(mapName)
         zStyle = options["zStyle"]
-        infoTableP, vertexesP, linedefsP, sidedefsP, sectorsP, \
-            thingsP, palleteP, colorMapP = getBasicData(pWAD, mapName, zStyle)
-        if pWAD is not None and infoTableP is False:
-            return False
+        vertexesP, linedefsP, sidedefsP, sectorsP, \
+            thingsP, palleteP, colorMapP = getBasicData(pData, zStyle)
+
 
         # Combine iWAD and pWAD data
         if len(vertexesP) > 0:
@@ -2011,37 +2018,33 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
 
     # get Flats (textures of floors)
     listOfFlats = getListOfFlats(sectors)
-    with open(iWAD, "rb") as fs:
-        flats = getFlats(fs, infoTable, listOfFlats, pallete)
+    flats = getFlats(iData, listOfFlats, pallete)
     # Update flats from pWAD
     if pWAD is not None:
-        with open(pWAD, "rb") as fs:
-            flatsP = getFlats(fs, infoTableP, listOfFlats, pallete)
+        flatsP = getFlats(pData, listOfFlats, pallete)
         flats.update(flatsP)
 
     # Get Patches (building blocks for wall textures)
-    with open(iWAD, "rb") as fs:
-            patchesNames = getPatchesNames(fs, infoTable)
-            patches = getPictures(patchesNames, fs, infoTable, pallete)
+    patchesNames = getPatchesNames(iData.getLump("PNAMES"))
+    patches = getPictures(iData, patchesNames, pallete)
     if pWAD is not None:
-        with open(pWAD, "rb") as fs:
-            patchesNamesP = getPatchesNames(fs, infoTableP)
-            # If there is no PNAMES lump,
-            # we still want to check for the patches, in case they are
-            # redefined in the pWAD
-            if len(patchesNamesP) == 0:
-                patchesNamesP = patchesNames
-            patchesP = getPictures(patchesNamesP, fs, infoTableP, pallete)
-            patchesNames = patchesNamesP
-            patches.update(patchesP)
+        patchesNamesP = getPatchesNames(pData.getLump("PNAMES"))
+        # If there is no PNAMES lump,
+        # we still want to check for the patches, in case they are
+        # redefined in the pWAD
+        if len(patchesNamesP) == 0:
+            patchesNamesP = patchesNames
+        patchesP = getPictures(pData, patchesNamesP, pallete)
+        patchesNames = patchesNamesP
+        patches.update(patchesP)
 
     # Get Textures
-    with open(iWAD, "rb") as fs:
-            textureInfo = getTextureInfo(fs, infoTable)
-            textures = getTextures(textureInfo, patches, patchesNames)
+    textureInfo = getTextureInfo(iData.getLump("TEXTURE1")) +\
+                  getTextureInfo(iData.getLump("TEXTURE2"))
+    textures = getTextures(textureInfo, patches, patchesNames)
     if pWAD is not None:
-        with open(pWAD, "rb") as fs:
-            textureInfoP = getTextureInfo(fs, infoTableP)
+        textureInfoP = getTextureInfo(pData.getLump("TEXTURE1")) +\
+                      getTextureInfo(pData.getLump("TEXTURE2"))
         if len(textureInfoP) > 0:
             texturesP = getTextures(textureInfoP, patches, patchesNames)
             textures.update(texturesP)
@@ -2053,17 +2056,15 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # Get things / sprites
     thingsList, spriteList = [], []
     sprites = {}
-    with open(iWAD, "rb") as fs:
-        thingsList, spriteList = parceThings(things, infoTable, options, stats)
-        sprites = getPictures(spriteList, fs, infoTable, pallete)
+    thingsList, spriteList = parceThings(things, iData.infoTable, options, stats)
+    sprites = getPictures(iData, spriteList, pallete)
 
     # Update things / sprites from pWAD
     if pWAD is not None:
-        with open(pWAD, "rb") as fs:
-            if thingsList == [] and spriteList == []:
-                thingsList, spriteList = \
-                        parceThings(things, infoTableP, options, stats)
-            spritesP = getPictures(spriteList, fs, infoTableP, pallete)
+        if thingsList == [] and spriteList == []:
+            thingsList, spriteList = \
+                    parceThings(things, pData.infoTable, options, stats)
+        spritesP = getPictures(pData, spriteList, pallete)
         sprites.update(spritesP)
 
     # Generate Color Conversion table
@@ -2108,13 +2109,9 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     stats["15Things"] = len(things)
 
     # Get TitlePic
-    with open(iWAD, "rb") as fs:
-        pictureLump = getLump("TITLEPIC", fs, infoTable)
-        titlepic = getPicture(pictureLump, pallete)
+    titlepic = getPicture(iData.getLump("TITLEPIC"), pallete)
     if pWAD is not None:
-        with open(pWAD, "rb") as fs:
-            pictureLump = getLump("TITLEPIC", fs, infoTableP)
-            titlepic = getPicture(pictureLump, pallete)
+        titlepic = getPicture(pData.getLump("TITLEPIC"), pallete)
 
     # Draw/write statistics info in the final image
     drawStats(im, titlepic, stats)
@@ -2184,7 +2181,7 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
 
 
 if __name__ == "__main__":
-
+    
     # If called directly, assume this is a CLI usage case
     # CLI usage works like this:
     # >python wad2pic.py iWAD mapN pWAD
