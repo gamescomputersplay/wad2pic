@@ -155,36 +155,27 @@ class WADData:
 
     # Given the map name, get all correspondent lumps list
     # that is, vertixes, linedefs, sidedefs, sectors, things
-    # and a few other things that I am not using
     def setMap(self, mapName):
-        
-        # Is this string a potential Map name (ExMy or MAPnn)?
-        # This is needed to locate lumps belonging to a particular map
-        def isMapName(text):
-            if text[0] == "E" and text[1] in "0123456789" \
-                            and text[2] == "M" and text[3] in "0123456789":
-                return True
-            if text[0:3] == "MAP" and text[3] in "0123456789" \
-                            and text[4] in "0123456789":
-                return True
-            return False
     
-        foundMap = False
         self.mapInfoTable = []
+        mapNameFixed = addTrailingZeros(mapName)
+        foundMap = False
+        requiredLumps = ["VERTEXES", "LINEDEFS", "SIDEDEFS", "SECTORS\x00", "THINGS\x00\x00"]
         for info in self.infoTable:
 
             # If the name is the map name we need: start copying
-            if isMapName(info[2]) and mapName in info[2]:
+            if mapNameFixed in info[2]:
                 foundMap = True
-            # If it is the map name, but not the one we need: stop copying
-            if isMapName(info[2]) and mapName not in info[2]:
-                foundMap = False
             # Copy the level lumps to a separate list
-            if foundMap:
+            if foundMap and info[2] in requiredLumps:
                 self.mapInfoTable.append(info)
+                del requiredLumps[requiredLumps.index(info[2])]
+            # If it is the map name, but not the one we need: stop copying
+            if len(requiredLumps) == 0:
+                return True
 
-        return len(self.mapInfoTable) > 0
-
+        return False
+    
     # Return lump's content (as bytes)
     def getLump(self, lumpName):
         lumpInfo = self.infoTable
