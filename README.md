@@ -1,11 +1,17 @@
 
 ## About
 
-Wad2Pic is a python program that draws an isometric image of a Doom map from a WAD file. Check the root directory for a sample for E1M1 map for the first Doom, famous "Hangar". Do you want an image like this for your favourite Doom map? You can do it, wad2pic is (relatively) easy to use, even if you don't know a thing about Python. In this file let me outline how one can go about it.
+Wad2Pic is a python program that draws an isometric image of a Doom map from a WAD file. Check the root directory for a sample for the E1M1 map for the first Doom, famous "Hangar". Do you want an image like this for your favorite Doom map? You can do it, wad2pic is (relatively) easy to use, even if you don't know a thing about Python. In this file let me outline how one can go about it.
 
 ## Prerequisites
 
 You need to have 3 things installed: python itself and a couple of libraries. Let's look at the details:
+
+## Console commands
+
+To be able to install modules and run the python script you need to be able to launch and operate something that is called a “Command prompt”, be able to navigate to the folder with your WAD files and run commands mentioned in this Readme file.
+
+In Windows Command prompt can be reached with “Win+R” and then running “cmd” command. On Mac, the app called “Terminal” is what you need. And if you are using Linux I am guessing you know more about using command prompt than I ever will
 
 ### Python
 
@@ -29,6 +35,11 @@ You may have heard about this one as the one that those data-scientists and AI-e
 	pip install numpy
 
 Now you should be all set to generate your first map image.
+### PyPNG library
+
+Some of the WADs use PNG as the format to store images. PyPNG provides some useful tools to work with those. Here’s the command:
+
+	pip install pypng
 
 ## Simplest way to use the program
 
@@ -37,7 +48,7 @@ Make sure you have following files in your folder:
 * iWAD file. In most cases it is either DOO2.WAD or doom.wad
 * pWAD file. That's your custom level file. Let's say you have one called myawesomemap.wad and the map you are interested in is MAP01
 
-All you need to do is to run this command in console:
+All you need to do is to run this command in console (note that in your case it may be “python” instead of “python3”):
 
 	python3 wad2pic.py DOOM2.WAD MAP01 myawesomemap.wad
 
@@ -49,10 +60,10 @@ If everything is done correctly, the program starts to print various log message
 Wad2Pican accepts a few parameter that can modify the way image is generated, such as:
 * Map rotation angle
 * How far high objects are shifted to the side
-* How squeezed is the map vertically. 
+* How squeezed is the map vertically? 
 Second and third parameters can produce different types of isometric projections: Military projection, Dimetric Orthogonal projection, maybe some others too.
 
-There are a few others parameters, for example support of Hexen-style format for linedefs, that ZDoom sometimes uses. If you see the resulting image that resembles an angry sea urchin - that may be the cause.
+There are a few other parameters, for example support of Hexen-style format for linedefs, that ZDoom sometimes uses. If you see the resulting image that resembles an angry sea urchin - that may be the cause.
 
 To use these parameters, you do need to know a bit of Python - although not a lot. Basically, how to create a dictionary and pass it to a function - pretty basic stuff. Example of how it can be done is in the comments of wad2pic.py
 
