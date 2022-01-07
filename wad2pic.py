@@ -52,7 +52,7 @@ import time
 # Image library to create and manutulate images
 from PIL import Image, ImageDraw, ImageFile
 # This to make it read internal PNG files (otherwise throws an error)
-ImageFile.LOAD_TRUNCATED_IMAGES = True
+#ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Some basic functions: square, trigonometry fo rotations
 import math
@@ -60,6 +60,11 @@ import math
 # NumPy is way better than Python lists for huge arrays,
 # and we have a huge arrays (zBuffer)
 import numpy as np
+
+# module to handle PNG format used in modern WADs (PIL's PNG
+# capabilities are often not enough for PNGs found in WADs
+# install with "pip install pypng"
+import png
 
 
 # if there is \x00 in the name - change all following bytes to \x00
@@ -170,7 +175,7 @@ class WADData:
             if foundMap and info[2] in requiredLumps:
                 self.mapInfoTable.append(info)
                 del requiredLumps[requiredLumps.index(info[2])]
-            # If it is the map name, but not the one we need: stop copying
+            # We copied all we needed, done
             if len(requiredLumps) == 0:
                 return True
 
@@ -629,6 +634,80 @@ def genColorConversion(pallete, colorMap):
 # Function that deal with pictures in Doom format (including patches)
 #####################################################################
 
+# convert PNG data into a PIL pic
+# Using external library "pypng" as PIL often can't read WAD's PNG properly
+def png2pic(pngdata, pallete):
+
+    # PNG can contain whatever. But we want it to only have
+    # pallete colors.
+    # Find closest pixel in the pallete
+    def closestPix(pixel, pallete):
+
+        # First look in the cached values
+        nonlocal palleteMemory
+        if pixel in palleteMemory:
+            # Need to return the copy, otherwise remaining script
+            # updates this value
+            return palleteMemory[pixel].copy()
+
+        # Otherwise find the closest pixel (min sum of by-pixel differences)
+        closest = (0,0,0)
+        minDistance = 256 * 4
+        for pal in pallete:
+            distance = sum([abs(pixel[i]-pal[i]) for i in range(3)])
+            if distance < minDistance:
+                minDistance = distance
+                closest = pal
+        palleteMemory[pixel] = list(closest)
+        return list(closest)
+
+    # Dynamic programming to speed up conversion to the pallete colors
+    palleteMemory = {}
+    
+    pngpic = png.Reader(bytes=pngdata)
+    width, height, rows, info = pngpic.read(lenient=True)
+
+    # Should resulting byte stream be grouped in 3s or 4s
+    bytesize = 3
+    if info["alpha"]:
+        bytesize = 4
+
+    # resulting image should have alpha channel anyway    
+    im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    px = im.load()
+    
+    temppix = []
+    # iterating through the resilts of PNG reader
+    # and copy pixels to a new PIL Image
+    for i, row in enumerate(rows):
+        for j, value in enumerate(row):
+
+            # constructing pixel from a bytestream
+            temppix.append(value)
+            
+            # if it is long enough - time to write this byte to the image
+            if len(temppix) == bytesize:
+
+                # Check it it is in the pallete
+                if tuple(temppix[:3]) not in pallete:
+                    # and use closest if it isn't
+                    newpix = closestPix(tuple(temppix[:3]), pallete)
+                else:
+                    newpix = temppix[:3]
+
+                # add transprency byte, or copy from the original
+                if bytesize == 3:
+                    newpix.append(255)
+                else:
+                    newpix.append(255 if temppix[3] > 127 else 0)
+
+                # copy the result to the final image, clear the pixel buffer
+                px[j//bytesize,i] = tuple(newpix)
+                temppix = []
+
+    return im
+
+            
 # Get names of patches (texture parts)
 # They all are stored in PNAMES lump and will be referenced by ID, not names
 def getPatchesNames(lump):
@@ -648,6 +727,10 @@ def getPatchesNames(lump):
 def getPicture(lump, pallete):
     if lump is None:
         return None
+
+    if lump.data[1:4] == b'PNG':
+        pic = png2pic(lump.data, pallete)
+        return pic
 
     # Size of the final picture
     width = int.from_bytes(lump.read(2), "little", signed=False)
@@ -826,22 +909,26 @@ def getFlats(wad, listOfFlats, pallete):
         rawFlat = wad.getLump(flatName)
         if rawFlat is None:
             continue
+
+        # 1. It is a PNG file
         if rawFlat.data[1:4] == b'PNG':
-            # I can't find a way to create an imagee from a PNG bytestring
-            # So I just save it and read it back
-            with open("wad2pic-tmp.png", "wb") as tmpfile:
-                tmpfile.write(rawFlat.data)
-            flatPic = Image.open("wad2pic-tmp.png")
+            flatPic = png2pic(rawFlat.data, pallete)
+            # it is still in wrong format for a flat
             flat = pic2flat(flatPic)
             flats[flatName] = flat
+
+        # 2. It is a regular DOOM flat
         elif len(rawFlat.data) == 4096:
             flatData = createFlat(rawFlat.data, pallete)
             flats[flatName] = flatData
+
+        # 3. it is a DOOM picture format flat
         elif len(rawFlat.data) != 0:
             flatPic = getPicture(rawFlat, pallete)
             if flatPic is not None:
                 flat = pic2flat(flatPic)
                 flats[flatName] = flat
+
     return flats
 
 
@@ -1406,7 +1493,6 @@ def getWallImage(wall, textures, colorConversion, scaleY):
                             yOff - (floor % 128)), textim)
     lightLevel = 31 - light // 8
     im = lightImage(im, lightLevel, colorConversion)
-
     return im
 
 
@@ -1594,15 +1680,6 @@ def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
                     zBuffer[picX, picY] = physY
 
     sprite.close()
-
-# in case it's a PNG, not a Doom image, to apply lighting we just
-# make a pixel a little darker
-# light: 0 - no change. 31 - black
-def darkenPixel(pixel, light):
-    newpixel = []
-    for i in range(3):
-        newpixel.append(int(pixel[i]*((31-light)/31)))
-    return tuple(newpixel)
 
 
 # Do the actual drawing
@@ -1812,16 +1889,10 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                     flatH = len(flats[flat])
                     flatW = len(flats[flat][0])
                     rawColor = flats[flat][originalY % flatH][originalX % flatW]
-                    
+
                     # apply lighting level
-                    # Either from color conversion mapping table
-                    if rawColor in colorConversion[light]:
-                        litColor = colorConversion[light][rawColor]
-                    # Or just proportinally converting the pixel values
-                    # (for PNG's, that do not follow conversion table)
-                    else:
-                        litColor = darkenPixel(rawColor, light)
-                        
+                    litColor = colorConversion[light][rawColor]
+
                     # draw, update the zBuffer
                     px2[i - hx, j - hy] = litColor
                     zBuffer[i - hx, j - hy] = j
@@ -2039,7 +2110,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         if len(textureInfoP) > 0:
             texturesP = getTextures(textureInfoP, patches, patchesNames)
             textures.update(texturesP)
-
+    
     # Generate walls
     # (more detailed info, neede to draw walls)
     walls = genWalls(vertexes, linedefs, sidedefs, sectors, options)
@@ -2172,7 +2243,7 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
 
 
 if __name__ == "__main__":
-    
+
     # If called directly, assume this is a CLI usage case
     # CLI usage works like this:
     # >python wad2pic.py iWAD mapN pWAD
