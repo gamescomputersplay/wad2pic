@@ -901,6 +901,14 @@ def getListOfFlats(sectors):
     return list(listOfFlats)
 
 
+def getListOfTextures(walls):
+    listOfTextures = set()
+    for wallgroup in walls.values():
+        for wall in wallgroup:
+            listOfTextures.add(wall.texture)
+    return list(listOfTextures)
+
+        
 # Given list of flats, return dictionary of flats data (R,G,B) list
 # {flatName: [[(R,G,B), (R,G,B), ...], [],[], ...]}
 def getFlats(wad, listOfFlats, pallete):
@@ -2078,12 +2086,16 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # Check if sectors are valid (invalid may crash the program)
     checkHOM(vertexes, linedefs, sidedefs, sectors)
 
+    # Generate walls
+    # (more detailed info, neede to draw walls)
+    walls = genWalls(vertexes, linedefs, sidedefs, sectors, options)
+    
     # get Flats (textures of floors)
-    listOfFlats = getListOfFlats(sectors)
-    flats = getFlats(iData, listOfFlats, pallete)
+    requiredFlats = getListOfFlats(sectors)
+    flats = getFlats(iData, requiredFlats, pallete)
     # Update flats from pWAD
     if pWAD is not None:
-        flatsP = getFlats(pData, listOfFlats, pallete)
+        flatsP = getFlats(pData, requiredFlats, pallete)
         flats.update(flatsP)
 
     # Get Patches (building blocks for wall textures)
@@ -2110,11 +2122,12 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         if len(textureInfoP) > 0:
             texturesP = getTextures(textureInfoP, patches, patchesNames)
             textures.update(texturesP)
-    
-    # Generate walls
-    # (more detailed info, neede to draw walls)
-    walls = genWalls(vertexes, linedefs, sidedefs, sectors, options)
-
+        # Extra textures that are not found in usual TEXTUREs
+        # Most probably they are Picture-as-Textures
+        requiredTextures = getListOfTextures(walls)
+        additionalTextures = getPictures(pData, requiredTextures, pallete)
+        textures.update(additionalTextures)
+        
     # Get things / sprites
     thingsList, spriteList = [], []
     sprites = {}
