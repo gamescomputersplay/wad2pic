@@ -92,3 +92,9 @@ The executable and supporting files are written to the `dist/` directory.
 pip install py2exe
 python setup.py py2exe
 ```
+
+### Ready-to-use Windows executable 
+
+Or, alternatively you can download and unzip wad2pic-win-executable.zip - it already contains executable version (wad2pic.exe may trigger Evo-Gen heuristic anti-virus warning, oh well).
+Just unzip it (there will be a bunch of libraries and Python files there). Put your iWAD and pWAD in the same folder. Now you can just run "wad2pic {iWADname} {MapName} {pWADName}" command.
+
