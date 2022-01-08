@@ -55,6 +55,24 @@ All you need to do is to run this command in console (note that in your case it 
 All parameters are required and they go exactly in this order: iWAD, map name, pWAD.
 If everything is done correctly, the program starts to print various log messages such as drawing a blueprint, that flats and then walls. After a few seconds/minutes/hours it should be done. The time needed depends on the size of the map. For example, "Hangar" takes about a minute on a reasonably powerful computer.
 
+### GNU / Linux / Mac Aliases
+
+You can alias this command in your favorite shell to make wad2pic available anywhere:
+
+```
+alias wad2pic='python ~/path_to/wad2pic.py'
+```
+
+### Windows Application Shortcut
+
+Create a new application shortcut with the below command. It opens a console window with wad2pic in its path:
+
+```
+cmd.exe /k set PATH=C:\path_to\wad2pic;%PATH%
+```
+
+This works for both the binary and source versions. There is a `wad2pic.bat` file that acts as the launcher to run from source in Windows. When running from source, Python needs to be in your path environment.
+
 ## More advance usage
 
 Wad2Pican accepts a few parameter that can modify the way image is generated, such as:
