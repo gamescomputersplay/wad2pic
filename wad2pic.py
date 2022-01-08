@@ -650,11 +650,15 @@ def png2pic(pngdata, pallete):
             # updates this value
             return palleteMemory[pixel].copy()
 
-        # Otherwise find the closest pixel (min sum of by-pixel differences)
+        # Otherwise find the closest pixel (min sum of by-channel differences)
         closest = (0,0,0)
         minDistance = 256 * 4
         for pal in pallete:
-            distance = sum([abs(pixel[i]-pal[i]) for i in range(3)])
+            distance = 0
+            for i in range(3):
+                distance += abs(pixel[i]-pal[i])
+                #distance += (pixel[i]-pal[i])**2
+            #distance = int(math.sqrt(distance))
             if distance < minDistance:
                 minDistance = distance
                 closest = pal
@@ -1142,10 +1146,15 @@ def parceThings(things, infoTable, options, stats):
     # Check if sprite with such angle number exists
     # Used to differentiate between object with one or many sprites
     def findSprite(sprite, angle):
+        found = ""
         for info in infoTable:
             if sprite in info[2] and angle in info[2]:
-                return info[2]
-        return ""
+                # in case we found sprite
+                # or we found second, unmirrored, sprite (A1 instead of A1A3)
+                if found == "" or \
+                   info[2][6:8] == "\x00\x00" and found[6:8] != "\x00\x00":
+                    found = info[2]
+        return found
 
     hCoefX, hCoefY = options["coefX"], options["coefY"]
 
@@ -1220,7 +1229,7 @@ def parceThings(things, infoTable, options, stats):
 
             # Get the sprite prefix
             thingName = spriteMap[thing.type]
-
+                
             # If it is in the statsNames: count it to the statistics
             if thingName in statsNames:
                 commonName = statsNames[thingName]
@@ -1241,6 +1250,7 @@ def parceThings(things, infoTable, options, stats):
             # (most non-mosnter objects)
             if len(thingName) == 4:
                 sprite = findSprite(thingName, "A0")
+            # these are dead things, already have frame name in the thing name
             elif len(thingName) == 5:
                 sprite = findSprite(thingName,  "0")
 
@@ -2127,18 +2137,25 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         requiredTextures = getListOfTextures(walls)
         additionalTextures = getPictures(pData, requiredTextures, pallete)
         textures.update(additionalTextures)
-        
+
+    # in case pWAD has different names for sprites
+    # (for example it does not combine L and R)
+    # we need the fullest list of options
+    joinedInfoTable = iData.infoTable.copy()
+    if pWAD is not None: 
+        joinedInfoTable += pData.infoTable.copy()
+
     # Get things / sprites
     thingsList, spriteList = [], []
     sprites = {}
-    thingsList, spriteList = parceThings(things, iData.infoTable, options, stats)
+    thingsList, spriteList = parceThings(things, joinedInfoTable, options, stats)
     sprites = getPictures(iData, spriteList, pallete)
 
     # Update things / sprites from pWAD
     if pWAD is not None:
         if thingsList == [] and spriteList == []:
             thingsList, spriteList = \
-                    parceThings(things, pData.infoTable, options, stats)
+                    parceThings(things, joinedInfoTable, options, stats)
         spritesP = getPictures(pData, spriteList, pallete)
         sprites.update(spritesP)
 
