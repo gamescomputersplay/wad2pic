@@ -134,3 +134,6 @@ dmypy.json
 
 # exclude WADs
 *.wad
+
+# exclude windows build
+dist/

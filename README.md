@@ -81,3 +81,14 @@ While Wad2Pic should work fine for most WADs there are a few things that would t
 Let me know if you ran into issues (gamescomputersplay@gmail.com), we'll try to figure it out.
 
 Hope you will find this little utility useful. Some resulting files do look really cool, if I do say so myself.
+
+## Creating a Windows executable
+
+[py2exe](https://www.py2exe.org) is used to convert the Python script into an executable Windows program. The only limitation is that you have to freeze on a Windows machine. py2exe does not support cross-compiling.
+
+The executable and supporting files are written to the `dist/` directory.
+
+```
+pip install py2exe
+python setup.py py2exe
+```
