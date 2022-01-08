@@ -1,3 +1,36 @@
+"""wad2pic
+Generates an isometric image of a Doom level.
+
+Usage:
+  wad2pic <iwad> <map> [<pwad>] [options]
+  wad2pic (-h | --license | --version)
+
+Options:
+  -h --help                 Show this help text.
+  --version                 Print current program version.
+  --license                 Print the license.
+  -m SIZE, --margin=SIZE    Pad the output image with SIZE margins.
+                            [default: 300]
+  -g AMT, --gamma=AMT       Gamma correct the final map with AMT.
+                            Amounts < 1 will lighten the image 
+                            and > 1 will darken.
+                            [default: 0.7]
+  -cx K, --coefx=K          X scaling of walls (relative to actual width).
+                            [default: 0]
+  -cy K, --coefy=K          Y scaling of walls (relative to actual height).
+                            [default: .8]
+  -r DEG, --rotate=DEG      Rotate DEGREES clockwise. 0 for no rotation.
+                            [default: 30]
+  --iso FACTOR              Adjust the isometric Y scale by FACTOR,
+                            usually in the range of [0.5 - 0.9].
+                            Set to 1 for no scaling.
+                            [default: 0.8]
+  --zstyle                  Use zDoom new linedef format 
+                            (similar to Hexen format).
+  --quiet                   Supress detailed messages during generation.
+  --debug                   Print program stack trace in case of error.
+"""
+
 # WAD 2 PIC
 # by GamesComputersPlay
 ######################################
@@ -48,6 +81,10 @@
 ##########
 
 import time
+import sys
+import os.path
+from docopt import docopt
+import constants
 
 # Image library to create and manutulate images
 from PIL import Image, ImageDraw, ImageFile
@@ -2272,71 +2309,75 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
         genMapWithException(iWAD, mapName, pWAD, options)
 
 
-if __name__ == "__main__":
+# Test if the IWAD and PWAD files exist.
+def testFilesExist(options):
 
+    # Test IWAD exists
+    filename = options["<iwad>"]
+    exists = os.path.isfile(filename)
+    if not exists:
+        print("IWAD not found: %s" % (filename))
+        return exists
+    
+    # Test PWAD exists (if given)
+    if options["<pwad>"] is not None:
+        filename = options["<pwad>"]
+        exists = os.path.isfile(filename)
+        if not exists:
+            print("PWAD not found: %s" % (filename))
+            return exists
+    
+    return True
+
+
+def printLicense(options):
+
+    if options["--license"] == True:
+        print(constants.LICENSE)
+        return True
+
+
+# Converts the program command arguments to wad2pic options format.
+# This keeps the internal option names backward compatible, it also
+# casts ints and floats to their correct data type.
+def convertDocOptions(options):
+
+    return {
+        "margins": int(options["--margin"]),
+        "gamma"  : float(options["--gamma"]),
+        "coefX"  : float(options["--coefx"]),
+        "coefY"  : float(options["--coefy"]),
+        "rotate": int(options["--rotate"]),
+        "scaleY": float(options["--iso"]),
+        "zStyle": options["--zstyle"],
+        "verbose" : not options["--quiet"],
+        "debug" : options["--debug"]
+      }
+
+
+if __name__ == "__main__":
+    
     # If called directly, assume this is a CLI usage case
     # CLI usage works like this:
-    # >python wad2pic.py iWAD mapN pWAD
-    # (all parameters mandatory)
-    
-    import argparse
 
-    parser = argparse.ArgumentParser(description=
-                "Generate a picture from Doom's waD file")
-    parser.add_argument('iwad',
-            help="Doom's iWAD file, most commonly DOOM2.WAD or doom.WAD")
-    parser.add_argument('map',
-            help="Map to use (ALL for all)")
-    parser.add_argument('pwad',
-            help="Your custom pWAD (such as myawesomewad.WAD)")
-    args = parser.parse_args()
-
-    if args.iwad is not None and \
-        args.pwad is not None and \
-        args.map is not None:
-            wad2pic(args.iwad, args.map, args.pwad)
-
+    # Parse command line arguments.
+    docOptions = docopt(__doc__, version=constants.VERSION)
+    if isinstance(docOptions, dict):
+        if docOptions["--debug"]:
+            # Print the parsed command line arguments
+            print(docOptions)
+        if printLicense(docOptions):
+            sys.exit(0)
+        elif not testFilesExist(docOptions):
+            # Return non-zero exit code to conform to POSIX standard
+            # for when an error occured.
+            sys.exit(255)
+        else:
+            iwad = docOptions["<iwad>"]
+            pwad = docOptions["<pwad>"]
+            map = docOptions["<map>"]
+            options = convertDocOptions(docOptions)
+            wad2pic(iwad, map, pwad, options)
     else:
-        print ("This program generates isometric view of a Doom level " +
-               "from a WAD file")
-        print ('\nBasic Usage example (command line):')
-        print ('>python3 wad2pic.py DOOM2.wad MAP01 mywad.wad')
-        print ('\nBasic Usage example (python):')
-        print ('import wad2pic')
-        print ('wad2pic.wad2pic("DOOM2.WAD", "MAP01", "mywad.wad")')
-
-    '''
-    Usage example:
-
-    wad2pic("doom1.WAD", "E1M1", pWAD=None, options=options)
-
-    Attributes:
-    wad2pic(iWAD, mapName, pWAD=None, options={})
-    - iWAD: main WAD (doom.WAD or DOOM2.WAD)
-    - mapName: ("ExMy" or "MAPnn") - which map to draw
-    - pWAD: mod WAD, optional
-    - options: dict of options, see below for details, optional
-
-    Options example:
-
-    options = {
-        # Margins around the map
-        "margins": 300,
-        # Gamma correction of the final map
-        # .7 is to lighten it up a little, 1 to bypass
-        "gamma"  : .7,
-        # X and Y size of a wall (in relation to actual height)
-        "coefX"  : 0,
-        "coefY"  : .8,
-        # rotate, degrees clockwise. 0 - no rotation
-        "rotate": 30,
-        # scale alongY axis, to create isometric view
-        # 1 for no scaling
-        "scaleY": .8,
-        # use zDoom WAD rules for pWAD (similar to Hexen format)
-        "zStyle": False,
-        # if True, stop at errors, otherwise just ignore a faulty map
-        "verbose" : True
-        "debug" : False
-        }
-    '''
+        # Print usage text
+        print(docOptions)
