@@ -2375,7 +2375,7 @@ if __name__ == "__main__":
         else:
             iwad = docOptions["<iwad>"]
             pwad = docOptions["<pwad>"]
-            map = docOptions["<map>"]
+            map = docOptions["<map>"].upper()
             options = convertDocOptions(docOptions)
             wad2pic(iwad, map, pwad, options)
     else:
