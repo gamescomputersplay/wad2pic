@@ -2122,8 +2122,8 @@ def drawStats(im, titlepic, stats):
 
     # If we have a title pic - display it
     if titlepic is not None:
-        if im.size[1] != 240:
-            im = im.resize((320, 240), resample=Image.BICUBIC)
+        if titlepic.size[1] != 200:
+            titlepic = titlepic.resize((320, 200), resample=Image.BICUBIC)
         im.paste(titlepic, tuple(cur))
         cur[0] += titlepic.size[0] + 50
     cur[1] += 20
