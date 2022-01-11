@@ -103,6 +103,9 @@ import numpy as np
 # install with "pip install pypng"
 import png
 
+# Module for reading zip files (used for PK3 packed files)
+import zipfile
+
 
 # if there is \x00 in the name - change all following bytes to \x00
 # Some pWADs erroneously have non \x00 symbols in the end,
@@ -131,6 +134,8 @@ def removeTrailingZeros(name):
 
 
 # Class to hold a lump data
+# mimicks the file pointer (read and seek functions)
+# it can also be used as a pseudo-file pointer in case of wad-in-pk3
 class Lump:
 
     def __init__(self, data):
@@ -150,23 +155,38 @@ class Lump:
         self.position = newPosition
         return requestedData
 
+    def close(self):
+        pass
 
 # Class to read various level information lumps from a WAD
 ##############################################################
 class WADData:
 
     # open WAD file, read Lump table
-    def __init__(self, filename):
-        self.fs = open(filename, "rb")
-        
+    def __init__(self, filename=None, bytedata=None):
+        if filename is not None:
+            self.fs = open(filename, "rb")
+        # this is useful when WAD is read as a part of a PK3 file
+        # no need to extract and save the file, just use its bytes
+        elif bytedata is not None:
+            self.fs = Lump(bytedata)
+        else:
+            raise Exception("WADData: Neither WAD file or WAD bytes provided")
+
         # read main info
         self.wadType, self.numLumps, self.infoTableOfs = self.readWADinfo()
+        # a Lump directory: list of (offset, size, lumpName)
         self.infoTable = self.readWADdirectory()
+        # portion of lump deirectory, only for one map
         self.mapInfoTable = []
+        # flag that map basic lumps were found
+        self.mapFound = False
+        # set of all lump names (used to find sprites while parsing Things)
+        self.listOfLumps = self.genListOfLumps()
 
         
     # read and return WAD's basic info:
-    # WAD type, nukmber of lumps, address of the Directory
+    # WAD type, number of lumps, address of the Directory
     def readWADinfo(self):
         # String: either "IWAD" (main game) or "PWAD" (extra content)
         wadType = self.fs.read(4).decode("utf-8")
@@ -195,6 +215,13 @@ class WADData:
 
         return infoTable
 
+    # generate list of all Lumps (used in parsing Things)
+    def genListOfLumps(self):
+        listOfLumps = set()
+        for info in self.infoTable:
+            listOfLumps.add(info[2])
+        return listOfLumps
+            
     # Given the map name, get all correspondent lumps list
     # that is, vertixes, linedefs, sidedefs, sectors, things
     def setMap(self, mapName):
@@ -214,6 +241,7 @@ class WADData:
                 del requiredLumps[requiredLumps.index(info[2])]
             # We copied all we needed, done
             if len(requiredLumps) == 0:
+                self.mapFound = True
                 return True
 
         return False
@@ -233,6 +261,59 @@ class WADData:
     def __del__(self):
         self.fs.close()
 
+
+class PK3Data():
+    # PK3 file
+    def __init__(self, filename):
+        self.pk3zip = zipfile.ZipFile(filename)
+        self.mapWAD = None
+        self.listOfLumps = self.genListOfLumps()
+
+    # Go through all ZIP objects and collect all the names
+    # will be used for things and sprites
+    def genListOfLumps(self):
+        listOfLumps = set()
+        for zinfo in self.pk3zip.infolist():
+            if not zinfo.is_dir():
+                name = zinfo.filename
+                if "\\" in name:
+                    name = name.split("\\")[-1]
+                if "." in name:
+                    name = name.split(".")[0]
+                listOfLumps.add(name.upper())
+        return listOfLumps
+
+    # Gven map name, get the WAD from Map folder
+    # treat it as WAD, get data into WADData object
+    # and set THAT's wad map to mapName too
+    # (it gets a litle "meta" at this point)
+    def setMap(self, mapName):
+        mapWadData = self.getZippedData(mapName, fromFolder="Maps")
+        self.mapWAD = WADData(bytedata=mapWadData)
+        self.mapWAD.setMap(mapName)
+        self.mapFound = self.mapWAD.mapFound
+        
+    # unzip and return the "lump"
+    # that is, the file with that lump's name (ignore the extension)
+    def getZippedData(self, filename, fromFolder=None):
+        for zinfo in self.pk3zip.infolist():
+            # This is a bit lazy implementation
+            # TODO: proper check of folder and filename
+            if fromFolder is None or fromFolder.upper() in zinfo.filename.upper():
+                if filename.upper() in zinfo.filename.upper():
+                    return self.pk3zip.read(zinfo)
+    
+    # Return lump's content (as bytes)
+    def getLump(self, lumpName):
+        if lumpName in ["VERTEXES", "LINEDEFS", "SIDEDEFS", "SECTORS", "THINGS"]:
+            return self.mapWAD.getLump(lumpName)
+        else:
+            lumpData = self.getZippedData(lumpName)
+            if lumpData is not None:
+                return Lump(lumpData)
+    
+    def __del__(self):
+        self.pk3zip.close()
 
 
 # Classes definitions for main WAD's items:
@@ -550,9 +631,10 @@ def getBasicData(wad, zStyle=False):
     colorMap = getColorMap(wad.getLump("COLORMAP"))
 
     # in map does not exist - leave
-    if len(wad.mapInfoTable) == 0:
-        # but return infotable and pallete and colormap
-        # it is needed for maps with non-standard names
+    if not wad.mapFound:
+        # but return pallete and colormap
+        # (it is needed for maps with non-standard names,
+        # they use pallete and colormap from iWADs)
         return False, False, False, False, \
                 False, pallete, colorMap
 
@@ -709,9 +791,10 @@ def png2pic(pngdata, pallete):
     width, height, rows, info = pngpic.read(lenient=True)
 
     # Should resulting byte stream be grouped in 3s or 4s
-    bytesize = 3
-    if info["alpha"]:
-        bytesize = 4
+    bytesize = info["planes"]
+    # or in 1s (for paletted PNG)
+    if bytesize == 1:
+        pngPallete = info["palette"]
 
     # resulting image should have alpha channel anyway    
     im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -729,6 +812,11 @@ def png2pic(pngdata, pallete):
             # if it is long enough - time to write this byte to the image
             if len(temppix) == bytesize:
 
+                # if it is one byte (palleted PNG)
+                # read the value from PNG pallete
+                if len(temppix) == 1:
+                    temppix = list(pngPallete[temppix[0]])
+
                 # Check it it is in the pallete
                 if tuple(temppix[:3]) not in pallete:
                     # and use closest if it isn't
@@ -737,7 +825,7 @@ def png2pic(pngdata, pallete):
                     newpix = temppix[:3]
 
                 # add transprency byte, or copy from the original
-                if bytesize == 3:
+                if bytesize == 3 or bytesize == 1:
                     newpix.append(255)
                 else:
                     newpix.append(255 if temppix[3] > 127 else 0)
@@ -905,16 +993,6 @@ def getTextures(textureInfo, patches, patchesNames):
 # Function that deal with flats (textures for floors and ceilings)
 # We dont use ceilings though, so just floors in this case
 ###################################################################
-
-# Given flat's name, return the raw flat's content
-# list of 1 byte per pixel, each is a code from teh pallete
-def getRawFlat(fs, infoTable, flatName):
-    for info in infoTable:
-        if flatName in info[2]:
-            fs.seek(info[0])
-            raw = fs.read(info[1])
-            return raw
-
 
 # Convert raw flat data into a 64x64 list of (R,G,B)
 # This is not a PIL picture, but just a list of lists of RGB tuples
@@ -1178,19 +1256,19 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
 # things in that list are enriched with some additional data, like sprite info
 # 2. list of all sprites to be used
 # so later we can get them all from the WAD file
-def parceThings(things, infoTable, options, stats):
+def parseThings(things, allLumps, options, stats):
 
     # Check if sprite with such angle number exists
     # Used to differentiate between object with one or many sprites
     def findSprite(sprite, angle):
         found = ""
-        for info in infoTable:
-            if sprite in info[2] and angle in info[2]:
+        for lumpName in allLumps:
+            if sprite in lumpName and angle in lumpName:
                 # in case we found sprite
                 # or we found second, unmirrored, sprite (A1 instead of A1A3)
                 if found == "" or \
-                   info[2][6:8] == "\x00\x00" and found[6:8] != "\x00\x00":
-                    found = info[2]
+                   lumpName[6:8] == "\x00\x00" and found[6:8] != "\x00\x00":
+                    found = lumpName
         return found
 
     hCoefX, hCoefY = options["coefX"], options["coefY"]
@@ -2044,6 +2122,8 @@ def drawStats(im, titlepic, stats):
 
     # If we have a title pic - display it
     if titlepic is not None:
+        if im.size[1] != 240:
+            im = im.resize((320, 240), resample=Image.BICUBIC)
         im.paste(titlepic, tuple(cur))
         cur[0] += titlepic.size[0] + 50
     cur[1] += 20
@@ -2092,7 +2172,12 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # get pWAD data
 
     if pWAD is not None:
-        pData = WADData(pWAD)
+        # choose the format
+        if pWAD[-4:] == ".pk3":
+            pData = PK3Data(pWAD)
+        else:
+            pData = WADData(pWAD)
+            
         pData.setMap(mapName)
         zStyle = options["zStyle"]
         vertexesP, linedefsP, sidedefsP, sectorsP, \
@@ -2120,11 +2205,11 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         print ("Getting geometry: Done")
         print (f"Stat: {len(vertexes)} vrt, {len(linedefs)} lnd, "+
                f"{len(sidedefs)} sdf, {len(sectors)} sct, {len(things)} thn")
+
     # Rotate vertixes and things
     rotate = options["rotate"]
     if rotate != 0:
         applyRotation(vertexes, things, rotate)
-
     # Scale vertixes along Y
     scaleY = options["scaleY"]
     if scaleY != 1:
@@ -2178,21 +2263,21 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # in case pWAD has different names for sprites
     # (for example it does not combine L and R)
     # we need the fullest list of options
-    joinedInfoTable = iData.infoTable.copy()
+    allLumps = iData.listOfLumps.copy()
     if pWAD is not None: 
-        joinedInfoTable += pData.infoTable.copy()
+        allLumps = allLumps.union(pData.listOfLumps)
 
     # Get things / sprites
     thingsList, spriteList = [], []
     sprites = {}
-    thingsList, spriteList = parceThings(things, joinedInfoTable, options, stats)
+    thingsList, spriteList = parseThings(things, allLumps, options, stats)
     sprites = getPictures(iData, spriteList, pallete)
 
     # Update things / sprites from pWAD
     if pWAD is not None:
         if thingsList == [] and spriteList == []:
             thingsList, spriteList = \
-                    parceThings(things, joinedInfoTable, options, stats)
+                    parseThings(things, allLumps, options, stats)
         spritesP = getPictures(pData, spriteList, pallete)
         sprites.update(spritesP)
 
@@ -2356,7 +2441,7 @@ def convertDocOptions(options):
 
 
 if __name__ == "__main__":
-    
+
     # If called directly, assume this is a CLI usage case
     # CLI usage works like this:
 
