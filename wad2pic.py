@@ -2388,6 +2388,8 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
         options["zStyle"] = False
     if "difficulty" not in options:
         options["difficulty"] = 4
+    if "deathmatch" not in options:
+        options["deathmatch"] = False
     if "verbose" not in options:
         options["verbose"] = True
     if "debug" not in options:
