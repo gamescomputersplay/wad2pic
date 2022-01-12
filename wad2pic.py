@@ -21,6 +21,13 @@ Options:
                             [default: .8]
   -r DEG, --rotate=DEG      Rotate DEGREES clockwise. 0 for no rotation.
                             [default: 30]
+  -s DIFF --skill DIFF      Display things set for the difficulty level DIFF,
+                            where DIFF is:
+                                1 for IATYTD/HNTR
+                                2 for HMP
+                                4 for UV/NM
+                                [default: 4]
+  --deathmatch              Display things set for deathmatch.
   --iso FACTOR              Adjust the isometric Y scale by FACTOR,
                             usually in the range of [0.5 - 0.9].
                             Set to 1 for no scaling.
@@ -42,8 +49,6 @@ Options:
 # Otherwise, seems to be working fine for all classic WADs and 90% of
 # "Top 100 WADs of all time"
 
-# See end of the file for usage example
-
 
 # Known problems and missing features:
 ######################################
@@ -64,16 +69,10 @@ Options:
 # - Darken parts of some transparent walls
 #   This is probably caused by the previous problem
 
-# - All graphics is read from scratch for each map
-#   Which is inefficient if you do "ALL" maps
-
-# - I suspect using SubSectors is way more efficient that doing the flood
-#   fill (so far I failed figuring out how to make it work)
 
 # TODO LIST:
 ############
 # - multiple PWADs
-# - PK3
 # - "Zoom" parameter to scale down resulting file
 #   (to be able to handle larger maps)
 
@@ -1272,6 +1271,9 @@ def parseThings(things, allLumps, options, stats):
         return found
 
     hCoefX, hCoefY = options["coefX"], options["coefY"]
+    difficulty = options["difficulty"]
+    deathmatch = options["deathmatch"]
+    
 
     # Mapping between ID (as it is used in "things" lumps)
     # and sprite name prefix.
@@ -1313,6 +1315,12 @@ def parseThings(things, allLumps, options, stats):
           21: "SARGN",   22: "HEADL",   10: "PLAYW",   12: "PLAYW",
         }
 
+    # If Deathmathc is ON: Remove Player Start,
+    # Add Deathmatch Start positions as Players
+    if deathmatch:
+        del spriteMap[1]
+        spriteMap[11] = "PLAY"
+
     # And this are the names to look out for and count
     # for usage in map statistics
     statsNames = {"POSS": "21Zombieman", "SPOS": "22Shotgunner",
@@ -1337,7 +1345,8 @@ def parseThings(things, allLumps, options, stats):
 
         # ignore DM things
         # only show things for difficulty level = UV
-        if thing.options & 16 == 16 or thing.options & 4 != 4:
+        if thing.options & 16 == 16 and not deathmatch or \
+           thing.options & difficulty != difficulty:
             continue
 
         if thing.type in spriteMap:
@@ -2377,6 +2386,8 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
         options["scaleY"] = 0.8
     if "zStyle" not in options:
         options["zStyle"] = False
+    if "difficulty" not in options:
+        options["difficulty"] = 4
     if "verbose" not in options:
         options["verbose"] = True
     if "debug" not in options:
@@ -2434,6 +2445,8 @@ def convertDocOptions(options):
         "coefY"  : float(options["--coefy"]),
         "rotate": int(options["--rotate"]),
         "scaleY": float(options["--iso"]),
+        "difficulty": int(options["--skill"]),    
+        "deathmatch": options["--deathmatch"],
         "zStyle": options["--zstyle"],
         "verbose" : not options["--quiet"],
         "debug" : options["--debug"]
