@@ -828,7 +828,9 @@ def palletizePic(im, pallete):
 
 # Shrink a picture, make sure it complies to the pallete
 def picResize(pic, shrink, pallete):
-    pic = pic.resize((pic.size[0] // shrink, pic.size[1] // shrink), Image.LANCZOS)
+    newW = max(pic.size[0] // shrink, 1)
+    newH = max(pic.size[1] // shrink, 1)
+    pic = pic.resize((newW, newH), Image.LANCZOS)
     pic = palletizePic(pic, pallete)
     return pic
 
@@ -1203,6 +1205,8 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
             continue
         start = vertexes[linedef.beg]
         end = vertexes[linedef.end]
+        # distance from the top left corner of teh image
+        # used later in the order of drawing
         distance = (start.x + end.x)/2 * hCoefX + (start.y + end.y)/2 * hCoefY
         isBack = False
 
@@ -1231,7 +1235,7 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
             # Note:
             # If it is a double-sided linedef, we only display front part.
             # Which is not quite right, actually,
-            # but it is better than displaying both
+            # but otherwise if would be messy for transparent walls
             if distance not in walls:
                 walls[distance] = []
 
@@ -1775,6 +1779,10 @@ def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
 
                 # use the trasnparency from an image
                 opacity = px[i, j][3]
+                # if it is transparent - skip it
+                if opacity == 0:
+                    continue
+                
                 # or 80 for facing away walls
                 if isTransparent:
                     opacity = 80
