@@ -1230,21 +1230,33 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
                 backceiling = sectors[backsector].ceilingHeight
                 floor = max(floor, backfloor)
                 ceiling = min(ceiling, backceiling)
-
+                # this will also be used for textures
+                position = "mid"
+                fromTop = False
+            else:
+                position = "proper"
+                
             # Create a new wall object, put it with the "distance" key
-            # Note:
-            # If it is a double-sided linedef, we only display front part.
-            # Which is not quite right, actually,
-            # but otherwise if would be messy for transparent walls
             if distance not in walls:
                 walls[distance] = []
 
             newWall = Wall(start.x, start.y, end.x, end.y, floor, ceiling,
                            sidedefs[frontSideDef].middle,
                            sidedefs[frontSideDef].xOffset,
-                           sidedefs[frontSideDef].yOffset, fromTop, "middle",
+                           sidedefs[frontSideDef].yOffset, fromTop, position,
                            light, isBack)
             walls[distance].append(newWall)
+            # for "midwalls" create second wall object for ther other sides
+            # but switch beginning, end, and sidedef
+            if position == "mid":
+                light = sectors[backsector].light
+                newWall = Wall(end.x, end.y, start.x, start.y, floor, ceiling,
+                               sidedefs[backSideDef].middle,
+                               sidedefs[backSideDef].xOffset,
+                               sidedefs[backSideDef].yOffset, fromTop, position,
+                               light, isBack)
+                walls[distance].append(newWall)
+                
 
         #  Generate bottom and top sidedefs
         if frontSideDef < len(sidedefs) and backSideDef < len(sidedefs) \
@@ -1683,6 +1695,11 @@ def getWallImage(wall, textures, colorConversion, scaleY, shrink):
     for i in range(-1, im.size[0] // textim.size[0] + 3):
         for j in range(-1, im.size[1] // textim.size[1] + 3):
 
+            # special rule for midtextures:
+            # only repreat once vertically
+            if position == "mid" and j != 1:
+                continue
+            
             # Two different ways of pasting textures:
             # FromTop (align top of the wall /top of the texture)
             # Used for regular middles, regular bottom and unpegged tops
@@ -1690,15 +1707,15 @@ def getWallImage(wall, textures, colorConversion, scaleY, shrink):
                 im.paste(textim, (i * textim.size[0] - xOff,
                                   j * textim.size[1] - yOff), textim)
             else:
-                if position == "top":
-                    # regular tops
+                if position == "top" or position == "mid":
+                    # regular tops and mid-textures (draw from bottom)
                     im.paste(textim, (i * textim.size[0] - xOff,
-                             im.size[1] - j * textim.size[1] - yOff), textim)
+                             im.size[1] - j * textim.size[1] - yOff - 1), textim)
                 else:
                     # upegged bottoms
                     im.paste(textim, (i*textim.size[0]-xOff,
                             im.size[1] - j * textim.size[1] -
-                            yOff - (floor % (128 // shrink))), textim)
+                            yOff - 1 - (floor % (128 // shrink))), textim)
                             #yOff - (floor % 128)), textim)
     lightLevel = 31 - light // 8
     im = lightImage(im, lightLevel, colorConversion)
@@ -1747,9 +1764,22 @@ def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
        or hCoefY != 0 and x2 < x1 and (x1 - x2) / (y1 - y2) > hCoefX / hCoefY \
        or hCoefY != 0 and y2 > y1 and (x2 - x1) / (y2 - y1) < hCoefX / hCoefY:
         isTransparent = True
+        # for midtextures - only show one side
+        # back if viewd from the back
+        if wall.position == "mid" and wall.isBack:
+            return
+    else:
+        # and front - if viewed from the front
+        if wall.position == "mid" and not wall.isBack:
+            return
+            
     # for walls made from back SideDefs, it is the other way round
     if wall.isBack:
         isTransparent = not isTransparent
+
+    # For mid-textures: they are never vioewd from the back
+    if wall.position == "mid":
+        isTransparent = False
 
     # Here the actual copying of pixel begins
     px = imres.load()
