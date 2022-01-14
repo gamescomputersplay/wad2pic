@@ -21,7 +21,7 @@ Options:
                             [default: .8]
   -r DEG, --rotate=DEG      Rotate DEGREES clockwise. 0 for no rotation.
                             [default: 30]
-  -s DIFF --skill DIFF      Display things set for the difficulty level DIFF,
+  -s DIFF --skill=DIFF      Display things set for the difficulty level DIFF,
                             where DIFF is:
                                 1 for IATYTD/HNTR
                                 2 for HMP
@@ -32,6 +32,10 @@ Options:
                             usually in the range of [0.5 - 0.9].
                             Set to 1 for no scaling.
                             [default: 0.8]
+  --shrink FACTOR           Shrink the whole map by FACTOR
+                            (helpful whan dealig with huge maps,
+                            works best with powers of 2)
+                            [default: 1]
   --zstyle                  Use zDoom new linedef format 
                             (similar to Hexen format).
   --quiet                   Supress detailed messages during generation.
@@ -700,6 +704,25 @@ def applyScaleY(vertexes, things, scaleY):
         thing.y = newy
 
 
+# Scale trasnformation (make everything smaller by SHRINK factor
+# vertexes & things coords, sector's floors and ceilings
+def applyShrinkage(vertexes, things, sidedefs, sectors, shrink):
+    for vertex in vertexes:
+        vertex.x //= shrink
+        vertex.y //= shrink
+    for thing in things:
+        thing.x //= shrink
+        thing.y //= shrink
+    for sidedef in sidedefs:
+        sidedef.xOffset //= shrink
+        sidedef.yOffset //= shrink
+    for sector in sectors:
+        sector.floorHeight //= shrink
+        sector.ceilingHeight //= shrink
+
+
+
+
 # Functions to get various graphic info from lumps (patches, textures, flats)
 ############################################################################
 
@@ -752,9 +775,9 @@ def genColorConversion(pallete, colorMap):
 # Function that deal with pictures in Doom format (including patches)
 #####################################################################
 
-# convert PNG data into a PIL pic
-# Using external library "pypng" as PIL often can't read WAD's PNG properly
-def png2pic(pngdata, pallete):
+# update all pixels in pic, so they are all from pallete pallete
+# also make sure transparency is either 0 or 255
+def palletizePic(im, pallete):
 
     # PNG can contain whatever. But we want it to only have
     # pallete colors.
@@ -786,6 +809,49 @@ def png2pic(pngdata, pallete):
     # Dynamic programming to speed up conversion to the pallete colors
     palleteMemory = {}
     
+    px = im.load()
+    for i in range(im.size[0]):
+        for j in range(im.size[1]):
+            transparency = 255
+            if len(px[i,j]) == 4:
+                transparency = 0 if px[i,j][3] < 128 else 255
+            # Check it it is in the pallete
+            if tuple(px[i,j][:3]) not in pallete:
+                # and use closest if it isn't
+                newpix = list(closestPix(tuple(px[i,j][:3]), pallete))
+            else:
+                newpix = list(px[i,j][:3])
+            newpix.append(transparency)
+            px[i,j] = tuple(newpix)
+    return im
+
+
+# Shrink a picture, make sure it complies to the pallete
+def picResize(pic, shrink, pallete):
+    pic = pic.resize((pic.size[0] // shrink, pic.size[1] // shrink), Image.LANCZOS)
+    pic = palletizePic(pic, pallete)
+    return pic
+
+
+# Mass shrink a dic of pictures
+def massResize(pics, shrink, pallete):
+    for picName in pics:
+        pics[picName] = picResize(pics[picName], shrink, pallete)
+
+
+# same, but for flats
+def massResizeFlats(flats, shrink, pallete):
+    for flatName in flats:
+        flatpic = flat2pic(flats[flatName])
+        flatpic = picResize(flatpic, shrink, pallete)
+        flats[flatName] = pic2flat(flatpic)
+
+
+
+# convert PNG data into a PIL pic
+# Using external library "pypng" as PIL often can't read WAD's PNG properly
+def png2pic(pngdata, pallete):
+
     pngpic = png.Reader(bytes=pngdata)
     width, height, rows, info = pngpic.read(lenient=True)
 
@@ -816,12 +882,7 @@ def png2pic(pngdata, pallete):
                 if len(temppix) == 1:
                     temppix = list(pngPallete[temppix[0]])
 
-                # Check it it is in the pallete
-                if tuple(temppix[:3]) not in pallete:
-                    # and use closest if it isn't
-                    newpix = closestPix(tuple(temppix[:3]), pallete)
-                else:
-                    newpix = temppix[:3]
+                newpix = temppix[:3]
 
                 # add transprency byte, or copy from the original
                 if bytesize == 3 or bytesize == 1:
@@ -833,6 +894,7 @@ def png2pic(pngdata, pallete):
                 px[j//bytesize,i] = tuple(newpix)
                 temppix = []
 
+    im = palletizePic(im, pallete)
     return im
 
             
@@ -1573,7 +1635,7 @@ def gammaCorrection(im, gamma):
 # Given the Wall object, return wall image
 # That is, texture applied to a rectangle of wall's size
 # Lighting, offsets and "unpegged-ness" are applied here too
-def getWallImage(wall, textures, colorConversion, scaleY):
+def getWallImage(wall, textures, colorConversion, scaleY, shrink):
     # Just unpacking data for convenience
     ceiling, floor, sx, sy, ex, ey, texture,\
         xOff, yOff, fromTop, position, light = \
@@ -1632,7 +1694,8 @@ def getWallImage(wall, textures, colorConversion, scaleY):
                     # upegged bottoms
                     im.paste(textim, (i*textim.size[0]-xOff,
                             im.size[1] - j * textim.size[1] -
-                            yOff - (floor % 128)), textim)
+                            yOff - (floor % (128 // shrink))), textim)
+                            #yOff - (floor % 128)), textim)
     lightLevel = 31 - light // 8
     im = lightImage(im, lightLevel, colorConversion)
     return im
@@ -1644,11 +1707,12 @@ def getWallImage(wall, textures, colorConversion, scaleY):
 # (all calculations already been done at this point)
 def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
                  colorConversion, options):
-    hCoefX, hCoefY, scaleY = \
-        options["coefX"], options["coefY"], options["scaleY"]
+    hCoefX, hCoefY, scaleY, shrink = \
+        options["coefX"], options["coefY"], \
+        options["scaleY"], options["shrink"]
 
     # get the wall image
-    fgim = getWallImage(wall, textures, colorConversion, scaleY)
+    fgim = getWallImage(wall, textures, colorConversion, scaleY, shrink)
     if not fgim:
         return
 
@@ -2215,6 +2279,12 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         print (f"Stat: {len(vertexes)} vrt, {len(linedefs)} lnd, "+
                f"{len(sidedefs)} sdf, {len(sectors)} sct, {len(things)} thn")
 
+    # Shrink transformations
+    shrink = options["shrink"]
+    if shrink != 1:
+        applyShrinkage(vertexes, things, sidedefs, sectors, shrink)
+
+    # Isometric transformations
     # Rotate vertixes and things
     rotate = options["rotate"]
     if rotate != 0:
@@ -2223,6 +2293,8 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     scaleY = options["scaleY"]
     if scaleY != 1:
         applyScaleY(vertexes, things, scaleY)
+
+
 
     # Check if sectors are valid (invalid may crash the program)
     checkHOM(vertexes, linedefs, sidedefs, sectors)
@@ -2290,6 +2362,12 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         spritesP = getPictures(pData, spriteList, pallete)
         sprites.update(spritesP)
 
+    # Shrink assests if needed
+    if shrink != 1:
+        massResize(sprites, shrink, pallete)
+        massResize(textures, shrink, pallete)
+        massResizeFlats(flats, shrink, pallete)
+    
     # Generate Color Conversion table
     # (Color mapping for different light levels)
     colorConversion = genColorConversion(pallete, colorMap)
@@ -2384,6 +2462,8 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
         options["rotate"] = 30
     if "scaleY" not in options:
         options["scaleY"] = 0.8
+    if "shrink" not in options:
+        options["shrink"] = 1
     if "zStyle" not in options:
         options["zStyle"] = False
     if "difficulty" not in options:
@@ -2447,6 +2527,7 @@ def convertDocOptions(options):
         "coefY"  : float(options["--coefy"]),
         "rotate": int(options["--rotate"]),
         "scaleY": float(options["--iso"]),
+        "shrink": int(options["--shrink"]),    
         "difficulty": int(options["--skill"]),    
         "deathmatch": options["--deathmatch"],
         "zStyle": options["--zstyle"],
