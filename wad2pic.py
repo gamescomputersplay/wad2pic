@@ -318,11 +318,12 @@ class PK3Data():
         ''' Unzip and return the data for the lump.
         That is, bytes from the file with that lump's name (ignore the extension)
         '''
+        filenameFixed = removeTrailingZeros(filename).upper()
         for zinfo in self.pk3zip.infolist():
-            # This is a bit lazy implementation
-            # TODO: proper check of folder and filename
+            # there is a potential collision if lump name matches folder name
+            # but it seems unlikely, so let's ignore it
             if fromFolder is None or fromFolder.upper() in zinfo.filename.upper():
-                if filename.upper() in zinfo.filename.upper():
+                if filenameFixed in zinfo.filename.upper():
                     return self.pk3zip.read(zinfo)
         return None
 
