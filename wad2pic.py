@@ -1,5 +1,12 @@
-"""wad2pic
-Generates an isometric image of a Doom level.
+"""WAD2PIC. Generates an isometric image of a Doom level from a WAD file.
+
+WAD2PIC draws an isometric DOOM level map from a WAD file, with textures,
+monsters, objects, lighting - pretty much everything vanilla.
+Supports most iWADs and pWADs, supports custom textures and sprites,
+ZDoom's linedef format, png files and PK3 containers.
+Does not support UDMF, multiple pWADs, DECORATE, SCRIPTS and so on.
+Written as a hobby project by GamesComputersPlay. Check out my youtube channel
+for "python and games" related videos.
 
 Usage:
   wad2pic <iwad> <map> [<pwad>] [options]
@@ -12,7 +19,7 @@ Options:
   -m SIZE, --margin=SIZE    Pad the output image with SIZE margins.
                             [default: 300]
   -g AMT, --gamma=AMT       Gamma correct the final map with AMT.
-                            Amounts < 1 will lighten the image 
+                            Amounts < 1 will lighten the image
                             and > 1 will darken.
                             [default: 0.7]
   -cx K, --coefx=K          X scaling of walls (relative to actual width).
@@ -36,66 +43,27 @@ Options:
                             (helpful whan dealig with huge maps,
                             works best with powers of 2)
                             [default: 1]
-  --zstyle                  Use zDoom new linedef format 
+  --zstyle                  Use zDoom new linedef format
                             (similar to Hexen format).
   --quiet                   Supress detailed messages during generation.
   --debug                   Print program stack trace in case of error.
 """
 
-# WAD 2 PIC
-# by GamesComputersPlay
-######################################
-# Program that draws an isometric DOOM level map from a WAD file,
-# with textures, monsters, objects - everything
-
-# Works with iWADs and pWADs (except maps that require multiple pWADs)
-# Can fail if WAD has errors or customized in some very non-standard way
-# Otherwise, seems to be working fine for all classic WADs and 90% of
-# "Top 100 WADs of all time"
-
-
-# Known problems and missing features:
-######################################
-# - Things sticking out of some walls, if the thing is tall enough and the
-#   wall is immediately to the right
-#   More accurate zBuffer calculation could solve it (store not only Y,
-#   but Y and Z too + conditions to display the pixel)
-
-# - Broken when coeffX is bigger than coeffY (isometric view from a side,
-#   rather them from the bottom).
-#   This is probably related to previous problem
-
-# - Ugly resized walls
-#   Proper solution is to implement proper affine transormation of the wall
-#   image. Challenge is to get original position from transformed image
-#   (to fill zBuffer data)
-
-# - Darken parts of some transparent walls
-#   This is probably caused by the previous problem
-
-
-# TODO LIST:
-############
-# - multiple PWADs
-# - "Zoom" parameter to scale down resulting file
-#   (to be able to handle larger maps)
 
 # Imports:
 ##########
 
-import time
 import sys
 import os.path
-from docopt import docopt
-import constants
-
-# Image library to create and manutulate images
-from PIL import Image, ImageDraw, ImageFile
-# This to make it read internal PNG files (otherwise throws an error)
-#ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Some basic functions: square, trigonometry fo rotations
 import math
+
+# Module for reading zip files (used for PK3 packed files)
+import zipfile
+
+# Image library to create and manutulate images
+from PIL import Image, ImageDraw
 
 # NumPy is way better than Python lists for huge arrays,
 # and we have a huge arrays (zBuffer)
@@ -106,40 +74,53 @@ import numpy as np
 # install with "pip install pypng"
 import png
 
-# Module for reading zip files (used for PK3 packed files)
-import zipfile
+# CLI parsing library
+from docopt import docopt
+
+# Version and licence
+import constants
 
 
-# if there is \x00 in the name - change all following bytes to \x00
-# Some pWADs erroneously have non \x00 symbols in the end,
-# this function takes care of it
+# Helpers to clean lumps' names
+##################################
+
 def trailingZeros(name):
-    for i in range(len(name)):
-        if name[i] == "\x00":
+    ''' If there is \x00 in the name - change all following bytes to \x00
+    Some pWADs erroneously have non \x00 symbols after \x00,
+    this function takes care of it
+    '''
+    for i, char in enumerate(name):
+        if char == "\x00":
             updatedName = name[:i+1] + "\x00" * (len(name) - i - 1)
             return updatedName
     return name
 
 
-# if the name is shorter than 8 bytes, padd it with "\x00"
 def addTrailingZeros(name):
+    ''' If the name is shorter than 8 bytes, pad it with "\x00"
+    '''
     if len(name) < 8:
         return name + "\x00" * (8 - len(name))
     return name
 
 
-# remove trailing \x00s
 def removeTrailingZeros(name):
+    ''' Remove trailing \x00s
+    '''
     for i, char in enumerate(name):
         if char == "\x00":
             return name[:i]
     return name
 
 
-# Class to hold a lump data
-# mimicks the file pointer (read and seek functions)
-# it can also be used as a pseudo-file pointer in case of wad-in-pk3
+# Data reading and storing classes
+##################################
+
 class Lump:
+    ''' Class to hold lump's data.
+    Mimicks the file pointer (read/seek/close functions).
+    Can also be used as a pseudo-file pointer in case of wad-in-pk3
+    '''
 
     def __init__(self, data):
         self.data = data
@@ -147,50 +128,62 @@ class Lump:
         self.length = len(data)
 
     def reset(self):
+        ''' Reset reading pointer to 0
+        '''
         self.position = 0
 
     def seek(self, newPosition):
+        ''' Move reading pointer to newPosition
+        '''
         self.position = newPosition
 
     def read(self, nBytes):
+        ''' Return nBytes from current position, move pointer
+        '''
         newPosition = min(self.position + nBytes, len(self.data))
         requestedData = self.data[self.position:newPosition]
         self.position = newPosition
         return requestedData
 
     def close(self):
-        pass
+        ''' Empty. Used for ducktyping with normal file pointer
+        '''
 
-# Class to read various level information lumps from a WAD
-##############################################################
+
 class WADData:
+    ''' Class to read various level information lumps from a WAD
+    '''
 
-    # open WAD file, read Lump table
     def __init__(self, filename=None, bytedata=None):
         if filename is not None:
+            # not using "with", as I want to keep it open,
+            # and close on destruction
             self.fs = open(filename, "rb")
-        # this is useful when WAD is read as a part of a PK3 file
+        # bytedata is useful when WAD is read as a part of a PK3 file
         # no need to extract and save the file, just use its bytes
         elif bytedata is not None:
             self.fs = Lump(bytedata)
         else:
             raise Exception("WADData: Neither WAD file or WAD bytes provided")
 
-        # read main info
-        self.wadType, self.numLumps, self.infoTableOfs = self.readWADinfo()
-        # a Lump directory: list of (offset, size, lumpName)
+        # Main WAD info from WAD's header
+        _, self.numLumps, self.infoTableOfs = self.readWADinfo()
+        # Lump directory: list of (offset, size, lumpName)
         self.infoTable = self.readWADdirectory()
+
         # portion of lump deirectory, only for one map
         self.mapInfoTable = []
         # flag that map basic lumps were found
         self.mapFound = False
+
         # set of all lump names (used to find sprites while parsing Things)
         self.listOfLumps = self.genListOfLumps()
 
-        
-    # read and return WAD's basic info:
-    # WAD type, number of lumps, address of the Directory
+
     def readWADinfo(self):
+        ''' Read and return WAD's basic info from WAD header:
+        WAD type, number of lumps, address of the WAD Directory
+        '''
         # String: either "IWAD" (main game) or "PWAD" (extra content)
         wadType = self.fs.read(4).decode("utf-8")
         # Total number of lumps (pieces of info)
@@ -200,9 +193,10 @@ class WADData:
         return wadType, numLumps, infoTableOfs
 
 
-    # Given the position of the directory and number of lumps,
-    # read WAD's directory, return a list of lumps as (position, size, name)
     def readWADdirectory(self):
+        ''' Given the position of the directory and number of lumps,
+        read WAD's directory, return a list of lumps as (position, size, name)
+        '''
         self.fs.seek(self.infoTableOfs)
         infoTable = []
         for i in range(self.numLumps):
@@ -213,22 +207,29 @@ class WADData:
             # Size of this lumps, in bytes
             size = int.from_bytes(self.fs.read(4), "little", signed=True)
             # Name of this lump (will be padded by \x00, if sorter than 8 bytes)
-            lumpName = self.fs.read(8).decode("utf-8")
+            lumpName = self.fs.read(8).decode("ISO-8859-1")
             infoTable.append([filePos, size, lumpName])
 
         return infoTable
 
-    # generate list of all Lumps (used in parsing Things)
+
     def genListOfLumps(self):
+        ''' Generate list of all Lumps (used in parsing Things)
+        '''
         listOfLumps = set()
         for info in self.infoTable:
             listOfLumps.add(info[2])
         return listOfLumps
-            
-    # Given the map name, get all correspondent lumps list
-    # that is, vertixes, linedefs, sidedefs, sectors, things
+
+
     def setMap(self, mapName):
-    
+        ''' Given the map name, populate mapInfoTable variable 
+        with all correspondent lumps for that map:
+        that is, vertixes, linedefs, sidedefs, sectors, things
+        Basically, this methods ensures class will return the right map lumps
+        (VERTEXES etc) when getLump is called
+        '''
+
         self.mapInfoTable = []
         mapNameFixed = addTrailingZeros(mapName)
         foundMap = False
@@ -248,33 +249,47 @@ class WADData:
                 return True
 
         return False
-    
-    # Return lump's content (as bytes)
+
+
     def getLump(self, lumpName):
+        ''' Return lump's content (as Lump object)
+        '''
+        # lumpInfo is either full infoTable (all lumps)
+        # or mapInfoTable (just this map)
         lumpInfo = self.infoTable
         if lumpName in ["VERTEXES", "LINEDEFS", "SIDEDEFS", "SECTORS", "THINGS"]:
             lumpInfo = self.mapInfoTable
+
         fixedLumpName = addTrailingZeros(lumpName)
         for info in lumpInfo:
             if info[2] == fixedLumpName:
                 self.fs.seek(info[0])
                 return Lump(self.fs.read(info[1]))
-            
-    # clean up, close the file
+        return None
+
+
     def __del__(self):
+        ''' Close the file on destruction
+        '''
         self.fs.close()
 
 
 class PK3Data():
-    # PK3 file
+    ''' Class to work with PK3 files
+    Mimics external methods of WADData class, so they can be used interchangebly
+    '''
+
     def __init__(self, filename):
         self.pk3zip = zipfile.ZipFile(filename)
         self.mapWAD = None
         self.listOfLumps = self.genListOfLumps()
+        self.mapFound = False
 
-    # Go through all ZIP objects and collect all the names
-    # will be used for things and sprites
+
     def genListOfLumps(self):
+        ''' Go through all ZIP objects and collect all the names
+        resulting list of lumps will be used in parsing things
+        '''
         listOfLumps = set()
         for zinfo in self.pk3zip.infolist():
             if not zinfo.is_dir():
@@ -286,57 +301,71 @@ class PK3Data():
                 listOfLumps.add(name.upper())
         return listOfLumps
 
-    # Gven map name, get the WAD from Map folder
-    # treat it as WAD, get data into WADData object
-    # and set THAT's wad map to mapName too
-    # (it gets a litle "meta" at this point)
+
     def setMap(self, mapName):
+        ''' Gven map name, get the WAD from Map folder
+        treat it as WAD, get data into WADData object
+        and set THAT's wad map to mapName too
+        (it gets a litle "meta" at this point)
+        '''
         mapWadData = self.getZippedData(mapName, fromFolder="Maps")
         self.mapWAD = WADData(bytedata=mapWadData)
         self.mapWAD.setMap(mapName)
         self.mapFound = self.mapWAD.mapFound
-        
-    # unzip and return the "lump"
-    # that is, the file with that lump's name (ignore the extension)
+
+
     def getZippedData(self, filename, fromFolder=None):
+        ''' Unzip and return the data for the lump.
+        That is, bytes from the file with that lump's name (ignore the extension)
+        '''
         for zinfo in self.pk3zip.infolist():
             # This is a bit lazy implementation
             # TODO: proper check of folder and filename
             if fromFolder is None or fromFolder.upper() in zinfo.filename.upper():
                 if filename.upper() in zinfo.filename.upper():
                     return self.pk3zip.read(zinfo)
-    
-    # Return lump's content (as bytes)
+        return None
+
+
     def getLump(self, lumpName):
+        ''' Return Lump by lump's name
+        '''
+        # if it is a map gepmetry lump - return it from the map's WAD
         if lumpName in ["VERTEXES", "LINEDEFS", "SIDEDEFS", "SECTORS", "THINGS"]:
             return self.mapWAD.getLump(lumpName)
-        else:
-            lumpData = self.getZippedData(lumpName)
-            if lumpData is not None:
-                return Lump(lumpData)
-    
+
+        # otherwise - look for a file with this name
+        lumpData = self.getZippedData(lumpName)
+        if lumpData is not None:
+            return Lump(lumpData)
+
+        return None
+
+
     def __del__(self):
+        ''' Close the file on dstruction
+        '''
         self.pk3zip.close()
 
 
 # Classes definitions for main WAD's items:
 # vertixes, linedefs, sidedefs, sectors, things
 # (and some other classes that are not in WADs, but needed for this program)
-############################################
+############################################################################
 
-# Verteces: the dots on the XY plane, that everything else connects to
 class Vertex:
-
+    ''' Verteces: the dots on the XY plane, that everything else connects to
+    '''
     def __init__(self, x, y):
         # Just X and Y coordinates
         self.x = x
         self.y = y
 
 
-# LineDefs: lines connecting vertices that build the geometry of the level.
-# Walls or borders of sectors will be connected to LineDefs
 class LineDef:
-
+    ''' LineDefs: lines connecting vertices that build the geometry of the level.
+    Walls or borders of sectors will be connected to LineDefs
+    '''
     def __init__(self, beg, end, front, back, topUnpegged, bottomUnpegged):
         # Beginning vertix
         self.beg = beg
@@ -356,9 +385,9 @@ class LineDef:
         self.bottomUnpegged = bottomUnpegged
 
 
-# SideDefs: wall data for each line
 class SideDef:
-
+    ''' SideDefs: wall data for each side of a Linedef
+    '''
     def __init__(self, xOffset, yOffset, upper, lower, middle, sector):
         # texture offset (to aligh textures on neighbouring walls)
         self.xOffset = xOffset
@@ -372,9 +401,9 @@ class SideDef:
         self.sector = sector
 
 
-# Sectors: areas of the level
 class Sector:
-
+    ''' Sectors: areas of the map
+    '''
     def __init__(self, floorHeight, ceilingHeight,
                  floorTexture, ceilingTexture, light):
         # Height of the floor and ceiling in this area
@@ -394,10 +423,10 @@ class Sector:
         self.HOMpassed = True
 
 
-# Things: monsters, pickups, other objects on a map
 class Thing:
-
-    def __init__(self, x, y, angle, type, options):
+    ''' Things: monsters, pickups, other objects on a map
+    '''
+    def __init__(self, x, y, angle, typeID, options):
         #  location
         self.x = x
         self.y = y
@@ -406,7 +435,7 @@ class Thing:
         # type (i.e what mosnter it is)
         # there is a conversion table from numeric thing ID to sprite name,
         # it is inside of the function ParseThing
-        self.type = type
+        self.type = typeID
         # what difficulty it appear at
         self.options = options
         # Following variables are not part of the WAD
@@ -417,11 +446,12 @@ class Thing:
         self.mirrored = False
 
 
-# This is not part of WAD
-# This class contains info needed to draw a wall
-# by a wall I mean not only proper walls,
-# but floors' and ceilings' side parts too
 class Wall:
+    ''' This is not part of WAD
+    This class contains info needed to draw a wall
+    by a wall I mean not only proper walls,
+    but floors' and ceilings' side parts too
+    '''
 
     def __init__(self, sx, sy, ex, ey, floor, ceiling, texture,
                  xOffset, yOffset, fromTop, position, light, isBack):
@@ -444,8 +474,8 @@ class Wall:
         self.xOffset = xOffset
         self.yOffset = yOffset
 
-        # String. If this is top, bottom or middle part
-        # Needed to correctly set the next variable
+        # String. If this is top, bottom, proper (wall) or mid (floating texture)
+        # Needed to correctly set the next variable and to cover with texture
         self.position = position
         # True/False. If this wall needs to be drawn from (in other words,
         # texture should be aligned with) bottom or top
@@ -456,15 +486,13 @@ class Wall:
         self.isBack = isBack
 
 
-
-
-
 # Functions to read main lumps (vertixes, linedefs etc)
 # and return them as lists of objects
 #######################################################
 
-# Read Vertixes from lump data
 def getVertixes(lump):
+    ''' Read list of Vertixes from VERTEXES lump
+    '''
     vertexes = []
     for i in range(lump.length//4):
 
@@ -481,11 +509,13 @@ def getVertixes(lump):
     return vertexes
 
 
-# Return list of Linedefs from a lump
-# zStyle flag switches zDoom new linedef format (similat to Hexen)
 def getLineDefs(lump, zStyle=False):
+    ''' Read list of Linedefs from LINEDEFS lump
+    zStyle flag switches zDoom new linedef format (similat to Hexen)
+    '''
     if lump is None:
         return []
+
     linedefs = []
     lineDefSize = 16 if zStyle else 14
     for i in range(lump.length // lineDefSize):
@@ -517,10 +547,12 @@ def getLineDefs(lump, zStyle=False):
     return linedefs
 
 
-# Return list of SideDefs from a lump
 def getSideDefs(lump):
+    ''' Read list of SideDefs from SIDEDEFS lump
+    '''
     if lump is None:
         return []
+
     sidedefs = []
     for i in range(lump.length//30):
 
@@ -549,10 +581,12 @@ def getSideDefs(lump):
     return sidedefs
 
 
-# Return list of Sectors
 def getSectors(lump):
+    ''' Read list of Sectors from SECTORS lump
+    '''
     if lump is None:
         return []
+
     sectors = []
     for i in range(lump.length//26):
 
@@ -566,10 +600,8 @@ def getSectors(lump):
             lump.read(8).decode("ISO-8859-1").upper())
         # lighting level (0-255)
         light = int.from_bytes(lump.read(2), "little", signed=True)
-        if light > 255:
-            light = 255
-        if light < 0:
-            light = 0
+        light = min(light, 255)
+        light = max(light, 0)
         lump.read(4)
 
         # create new Sector object, return list of Sector objects
@@ -580,10 +612,12 @@ def getSectors(lump):
     return sectors
 
 
-# Given list of map's lumps, return list of Things
 def getThings(lump, zStyle=False):
+    ''' Read list of Things from THINGS lump
+    '''
     if lump is None:
         return []
+
     things = []
     thingSize = 20 if zStyle else 10
     for i in range(lump.length//thingSize):
@@ -591,10 +625,11 @@ def getThings(lump, zStyle=False):
         if zStyle:
             lump.read(2)
             x = int.from_bytes(lump.read(2), "little", signed=True)
+            # same reason for inverting Y as for vertices
             y = -int.from_bytes(lump.read(2), "little", signed=True)
             lump.read(2)
             angle = int.from_bytes(lump.read(2), "little", signed=True)
-            type = int.from_bytes(lump.read(2), "little", signed=True)
+            typeID = int.from_bytes(lump.read(2), "little", signed=True)
             options = int.from_bytes(lump.read(2), "little", signed=True)
             lump.read(6)
         else:
@@ -607,28 +642,24 @@ def getThings(lump, zStyle=False):
             # 0 is East, then goes anti-clockwise
             angle = int.from_bytes(lump.read(2), "little", signed=True)
 
-            # Thing's type (what is it)
+            # Thing's typeID (what is it)
             # List of types are later in the program
-            type = int.from_bytes(lump.read(2), "little", signed=True)
+            typeID = int.from_bytes(lump.read(2), "little", signed=True)
 
-            # bits, which difficulty, match type this thing appears at
+            # bits, which difficulty this thing appears at
             options = int.from_bytes(lump.read(2), "little", signed=True)
 
         # create new Thing object, return list of Thing objects
-        newThing = Thing(x, y, angle, type, options)
+        newThing = Thing(x, y, angle, typeID, options)
         things.append(newThing)
 
     return things
 
 
-
-
-
-# Putting it all together: given a WAD filename and a map name
-# get all main level geometry data
-# (this does not include graphics: flats, textures, sprites)
 def getBasicData(wad, zStyle=False):
-
+    ''' Putting it all together: get all geometry data off a WAD object
+    Returns vertexes, linedefs, sidedefs, sectors, things, pallete, colorMap
+    '''
 
     pallete = getPallete(wad.getLump("PLAYPAL"))
     colorMap = getColorMap(wad.getLump("COLORMAP"))
@@ -654,13 +685,13 @@ def getBasicData(wad, zStyle=False):
 
 
 # Functions to facilitate vertixes transformation
-# This is for rotation and isometric view fo the map
-#######################################################
+# This is for rotation, scale down and isometric view fo the map
+################################################################
 
-# Rotate one set of coordinates by rotateDeg degrees
-# around the (0,0)
-# return new coordinates
 def rotatePoint(x, y, rotateDeg):
+    ''' Rotate one set of coordinates by rotateDeg degrees
+    around the (0,0). Return new coordinates
+    '''
     rotateRad = math.radians(rotateDeg)
     currAngleRad = math.atan2(y, x)
     dist = math.sqrt(x ** 2 + y ** 2)
@@ -670,8 +701,9 @@ def rotatePoint(x, y, rotateDeg):
     return int(newx), int(newy)
 
 
-# Rotate all vertixes and things by "rotate" angle
 def applyRotation(vertexes, things, rotate):
+    ''' Rotate all vertixes and things by "rotate" angle
+    '''
     # Just go through all XY coordinates and apply rotatePoint to each
     for vertex in vertexes:
         x, y = vertex.x, vertex.y
@@ -690,10 +722,11 @@ def applyRotation(vertexes, things, rotate):
             thing.angle += 360
 
 
-# Scale vertixes and things along Y axis by factor of scaleY
-# This is to create isometric view (viewing from a side)
-# scaleY is usually 0.5-0.9
 def applyScaleY(vertexes, things, scaleY):
+    ''' Scale vertexes and things along Y axis by factor of scaleY
+    This is to create isometric view (as if viewing from a side, not from
+    directly above). ScaleY is usually 0.5-0.9
+    '''
     for vertex in vertexes:
         y = vertex.y
         newy = int(y * scaleY)
@@ -704,9 +737,10 @@ def applyScaleY(vertexes, things, scaleY):
         thing.y = newy
 
 
-# Scale trasnformation (make everything smaller by SHRINK factor
-# vertexes & things coords, sector's floors and ceilings
 def applyShrinkage(vertexes, things, sidedefs, sectors, shrink):
+    ''' Scale trasnformation (make everything smaller by SHRINK factor
+    vertexes & things coords, sector's floors and ceilings
+    '''
     for vertex in vertexes:
         vertex.x //= shrink
         vertex.y //= shrink
@@ -721,18 +755,17 @@ def applyShrinkage(vertexes, things, sidedefs, sectors, shrink):
         sector.ceilingHeight //= shrink
 
 
-
-
 # Functions to get various graphic info from lumps (patches, textures, flats)
 ############################################################################
 
-# Functions that deal with colors
-#################################
+# First, functions that deal with colors and color transformation
+#################################################################
 
-# Get the pallete (256 colors used in the game)
-# Pallete is a list of 256 tuples,
-# each tuple has 3 0-255 integers (RGB color)
 def getPallete(lump):
+    ''' Get the pallete from PLAYPAL lump
+    Pallete is a list of 256 tuples, (256 colors used in the game)
+    each tuple has 3 0-255 integers (RGB color)
+    '''
     if lump is None:
         return []
     pallete = []
@@ -745,10 +778,11 @@ def getPallete(lump):
     return pallete
 
 
-# Get the ColorMap
-# Color Map is used to map colors to new colors for various light levels
-# Returns list of 34 maps, each map is a list of indexes in pallete to map to
 def getColorMap(lump):
+    ''' Get the ColorMap from COLORMAP lump
+    Color Map is used to map colors to new colors for various light levels
+    Returns list of 34 maps, each map is a list of indexes in pallete to map to
+    '''
     if lump is None:
         return []
 
@@ -761,9 +795,11 @@ def getColorMap(lump):
     return colorMap
 
 
-# Combines Pallette and ColorMap into Color Conversion table:
-# Map which RGB color to which, for various light levels
 def genColorConversion(pallete, colorMap):
+    ''' Combines Pallette and ColorMap into Color Conversion table:
+    Map which RGB color to which, for various light levels
+    litColor = colorConv[lightLevel][originalColor]
+    '''
     colorConv = []
     for i in range(34):
         colorConv.append({})
@@ -772,23 +808,24 @@ def genColorConversion(pallete, colorMap):
     return colorConv
 
 
-# Function that deal with pictures in Doom format (including patches)
+# Function that deal with pictures in Doom format (patches and sprites)
 #####################################################################
 
-# update all pixels in pic, so they are all from pallete pallete
-# also make sure transparency is either 0 or 255
 def palletizePic(im, pallete):
+    ''' Make image im conform with Doom's picture requirements:
+    All pixels should be from  "pallete"
+    All transparency is either 0 or 255
+    (used for PNG and for scaled down assets)
+    '''
 
-    # PNG can contain whatever. But we want it to only have
-    # pallete colors.
-    # Find closest pixel in the pallete
     def closestPix(pixel, pallete):
-
-        # First look in the cached values
+        ''' Find closest pixel in the pallete
+        '''
+        # First, dynamic programming: look in the cached values
         nonlocal palleteMemory
         if pixel in palleteMemory:
-            # Need to return the copy, otherwise remaining script
-            # updates this value
+            # Need to return the copy, otherwise main function
+            # would updates this value
             return palleteMemory[pixel].copy()
 
         # Otherwise find the closest pixel (min sum of by-channel differences)
@@ -806,12 +843,13 @@ def palletizePic(im, pallete):
         palleteMemory[pixel] = list(closest)
         return list(closest)
 
-    # Dynamic programming to speed up conversion to the pallete colors
+    # Dynamic programming cache to speed up conversion to the pallete colors
     palleteMemory = {}
-    
+
     px = im.load()
     for i in range(im.size[0]):
         for j in range(im.size[1]):
+
             transparency = 255
             if len(px[i,j]) == 4:
                 transparency = 0 if px[i,j][3] < 128 else 255
@@ -823,11 +861,13 @@ def palletizePic(im, pallete):
                 newpix = list(px[i,j][:3])
             newpix.append(transparency)
             px[i,j] = tuple(newpix)
+
     return im
 
 
-# Shrink a picture, make sure it complies to the pallete
 def picResize(pic, shrink, pallete):
+    ''' Shrink a picture, make sure the result is Doom compliant
+    '''
     newW = max(pic.size[0] // shrink, 1)
     newH = max(pic.size[1] // shrink, 1)
     pic = pic.resize((newW, newH), Image.LANCZOS)
@@ -835,24 +875,26 @@ def picResize(pic, shrink, pallete):
     return pic
 
 
-# Mass shrink a dic of pictures
 def massResize(pics, shrink, pallete):
+    ''' Mass shrink a dict of pictures
+    '''
     for picName in pics:
         pics[picName] = picResize(pics[picName], shrink, pallete)
 
 
-# same, but for flats
 def massResizeFlats(flats, shrink, pallete):
+    ''' Mass shrink a dict of flats
+    '''
     for flatName in flats:
         flatpic = flat2pic(flats[flatName])
         flatpic = picResize(flatpic, shrink, pallete)
         flats[flatName] = pic2flat(flatpic)
 
 
-
-# convert PNG data into a PIL pic
-# Using external library "pypng" as PIL often can't read WAD's PNG properly
 def png2pic(pngdata, pallete):
+    ''' convert PNG data into a PIL pic
+    Using external library "pypng" as PIL often can't read WAD's PNG properly
+    '''
 
     pngpic = png.Reader(bytes=pngdata)
     width, height, rows, info = pngpic.read(lenient=True)
@@ -863,10 +905,10 @@ def png2pic(pngdata, pallete):
     if bytesize == 1:
         pngPallete = info["palette"]
 
-    # resulting image should have alpha channel anyway    
+    # resulting image should have alpha channel anyway
     im = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     px = im.load()
-    
+
     temppix = []
     # iterating through the resilts of PNG reader
     # and copy pixels to a new PIL Image
@@ -875,7 +917,7 @@ def png2pic(pngdata, pallete):
 
             # constructing pixel from a bytestream
             temppix.append(value)
-            
+
             # if it is long enough - time to write this byte to the image
             if len(temppix) == bytesize:
 
@@ -887,7 +929,7 @@ def png2pic(pngdata, pallete):
                 newpix = temppix[:3]
 
                 # add transprency byte, or copy from the original
-                if bytesize == 3 or bytesize == 1:
+                if bytesize in (3, 1):
                     newpix.append(255)
                 else:
                     newpix.append(255 if temppix[3] > 127 else 0)
@@ -899,10 +941,11 @@ def png2pic(pngdata, pallete):
     im = palletizePic(im, pallete)
     return im
 
-            
-# Get names of patches (texture parts)
-# They all are stored in PNAMES lump and will be referenced by ID, not names
+
 def getPatchesNames(lump):
+    ''' Get all patches names (texture building components) from PNAME lump
+    They will be referenced by ID, not by names, so store them in a list, not dict
+    '''
     patchesNames = []
     if lump is None:
         return []
@@ -913,10 +956,12 @@ def getPatchesNames(lump):
     return patchesNames
 
 
-# Given lump name of a picture, get that picture, stored in Doom picture format
-# Used for patches, sprites, title screens etc (but not flats)
-# Picture returned as a PIL.Image object
 def getPicture(lump, pallete):
+    ''' Given lump name of a picture, get that picture, stored in Doom picture format
+    Used for patches, sprites, title screens etc (but not flats)
+    Picture returned as a PIL.Image object
+    '''
+
     if lump is None:
         return None
 
@@ -979,9 +1024,10 @@ def getPicture(lump, pallete):
     return im
 
 
-# Get all the pictures in a list
-# Returns a dictionary, where key is the picture's name and value is PIL.Image
 def getPictures(wad, pictureNames, pallete):
+    ''' Get all the pictures in a list
+    Returns a dictionary, where key is the picture's name and value is PIL.Image
+    '''
     pictures = {}
     for pictureName in pictureNames:
         pictureLump = wad.getLump(pictureName)
@@ -994,12 +1040,13 @@ def getPictures(wad, pictureNames, pallete):
 # Functions that deal with textures
 ###################################
 
-# Get info about all the textures
-# Which is texture data (name, width, height, patches)
-# where "patches" is a list of patches and offsets:
-# [(offsetX, offsetY, patchN),..]
-# They will be put together into a texture in a different function
 def getTextureInfo(lump):
+    ''' Get info about all the textures in a lump (TEXTURE1 / TEXTURE2)
+    Which is texture data (name, width, height, patches)
+    where "patches" is a list of patches and offsets:
+    [(offsetX, offsetY, patchN),..]
+    They will be put together into a texture in a different function
+    '''
     if lump is None:
         return []
     texturesInfo = []
@@ -1029,10 +1076,11 @@ def getTextureInfo(lump):
     return texturesInfo
 
 
-# Given a list of texture information (see previous function)
-# Create all textures (by constructing them from patches)
-# Return dictionary {textureName:PIL.Image}
 def getTextures(textureInfo, patches, patchesNames):
+    ''' Given a list of texture information (see previous function)
+    Create all textures (by constructing them from patches)
+    Return dictionary of {textureName:PIL.Image}
+    '''
     textures = {}
     for texture in textureInfo:
 
@@ -1053,14 +1101,24 @@ def getTextures(textureInfo, patches, patchesNames):
     return textures
 
 
+def getListOfTextures(walls):
+    ''' given all Wall objects, return names of all textures used in them '''
+    listOfTextures = set()
+    for wallgroup in walls.values():
+        for wall in wallgroup:
+            listOfTextures.add(wall.texture)
+    return list(listOfTextures)
+
+
 # Function that deal with flats (textures for floors and ceilings)
-# We dont use ceilings though, so just floors in this case
+# We dont use ceilings in this program though
 ###################################################################
 
-# Convert raw flat data into a 64x64 list of (R,G,B)
-# This is not a PIL picture, but just a list of lists of RGB tuples
-# [[(R,G,B), (R,G,B), (R,G,B), ...], [], [], ...]
 def createFlat(rawFlat, pallete):
+    ''' Convert raw flat data into a 64x64 list of (R,G,B)
+    This is not a PIL picture, but just a list of lists of RGB tuples
+    [[(R,G,B), (R,G,B), (R,G,B), ...], [], [], ...]
+    '''
     out = []
     pointer = 0
     width = 64
@@ -1074,8 +1132,9 @@ def createFlat(rawFlat, pallete):
     return out
 
 
-# Given list of sectors, get list of all flats (only floors), used in them
 def getListOfFlats(sectors):
+    ''' Given list of sectors, get list of all flats (only floors), used in them
+    '''
     listOfFlats = set()
     for sector in sectors:
         if sector.floorTexture not in listOfFlats:
@@ -1083,17 +1142,10 @@ def getListOfFlats(sectors):
     return list(listOfFlats)
 
 
-def getListOfTextures(walls):
-    listOfTextures = set()
-    for wallgroup in walls.values():
-        for wall in wallgroup:
-            listOfTextures.add(wall.texture)
-    return list(listOfTextures)
-
-        
-# Given list of flats, return dictionary of flats data (R,G,B) list
-# {flatName: [[(R,G,B), (R,G,B), ...], [],[], ...]}
 def getFlats(wad, listOfFlats, pallete):
+    ''' Given list of flats, return dictionary of flats data (R,G,B) list
+    {flatName: [[(R,G,B), (R,G,B), ...], [],[], ...]}
+    '''
     flats = {}
     for flatName in listOfFlats:
         rawFlat = wad.getLump(flatName)
@@ -1124,7 +1176,10 @@ def getFlats(wad, listOfFlats, pallete):
 
 # couple of helper functions to transform flats (arrays of tuples)
 # into PIL's images (pics) and back
+
 def flat2pic(flat):
+    ''' Transform flat image into PIL image
+    '''
     width = len(flat)
     height = len(flat[0])
     im = Image.new("RGB", (width, height), color=(0, 0, 0))
@@ -1136,6 +1191,8 @@ def flat2pic(flat):
 
 
 def pic2flat(pic):
+    ''' Transform PIL image into flat
+    '''
     width = pic.size[0]
     height = pic.size[1]
     px = pic.load()
@@ -1152,11 +1209,11 @@ def pic2flat(pic):
 # Functions to parse the map data, preparing for the drawing
 ############################################################
 
-# Check if the sectors are valid
-# (HOM stads for Hall Of Mirrors - an effect you see in classic Doom,
-# when a sector error is present)
 def checkHOM(vertexes, linedefs, sidedefs, sectors):
-
+    ''' Check if the sectors are valid
+    (HOM stads for Hall Of Mirrors - an effect you see in classic Doom,
+    when a sector error is present)
+    '''
     # Pouplate listOfVerteces data with list of all vertixes,
     # surrounding this sector
     for linedef in linedefs:
@@ -1186,13 +1243,13 @@ def checkHOM(vertexes, linedefs, sidedefs, sectors):
             sector.HOMpassed = False
 
 
-# Given level's, generate list of Walls objects
-# Wall object combines all info needed to draw a wall:
-# things like position, texture, type, lighting etc.
-# Returned as a dictionary, where key is the proportionate
-# to the distance from the corner
-# To draw from fartherst to closest, to make semi-transparent back-walls work
 def genWalls(vertexes, linedefs, sidedefs, sectors, options):
+    ''' Given level's info, generate list of Walls objects
+    Wall object combines all info needed to draw a wall:
+    things like position, texture, type, lighting etc.
+    Returned as a dictionary, where key is the distance from the corner
+    To draw from fartherst to closest, to make semi-transparent back-walls work
+    '''
     hCoefX, hCoefY = options["coefX"], options["coefY"]
     walls = {}
 
@@ -1235,7 +1292,7 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
                 fromTop = False
             else:
                 position = "proper"
-                
+
             # Create a new wall object, put it with the "distance" key
             if distance not in walls:
                 walls[distance] = []
@@ -1256,7 +1313,7 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
                                sidedefs[backSideDef].yOffset, fromTop, position,
                                light, isBack)
                 walls[distance].append(newWall)
-                
+
 
         #  Generate bottom and top sidedefs
         if frontSideDef < len(sidedefs) and backSideDef < len(sidedefs) \
@@ -1327,14 +1384,14 @@ def genWalls(vertexes, linedefs, sidedefs, sectors, options):
     return walls
 
 
-# Go through the list of things
-# Return two objects:
-# 1. dictionaly of things, where key is the distance (similar to walls)
-# things in that list are enriched with some additional data, like sprite info
-# 2. list of all sprites to be used
-# so later we can get them all from the WAD file
 def parseThings(things, allLumps, options, stats):
-
+    ''' Go through the list of things
+    Return two objects:
+    1. dictionaly of things, where key is the distance (similar to walls)
+    things in that list are enriched with some additional data, like sprite info
+    2. list of all sprites to be used
+    so later we can get them all from the WAD file
+    '''
     # Check if sprite with such angle number exists
     # Used to differentiate between object with one or many sprites
     def findSprite(sprite, angle):
@@ -1351,7 +1408,7 @@ def parseThings(things, allLumps, options, stats):
     hCoefX, hCoefY = options["coefX"], options["coefY"]
     difficulty = options["difficulty"]
     deathmatch = options["deathmatch"]
-    
+
 
     # Mapping between ID (as it is used in "things" lumps)
     # and sprite name prefix.
@@ -1431,7 +1488,7 @@ def parseThings(things, allLumps, options, stats):
 
             # Get the sprite prefix
             thingName = spriteMap[thing.type]
-                
+
             # If it is in the statsNames: count it to the statistics
             if thingName in statsNames:
                 commonName = statsNames[thingName]
@@ -1487,11 +1544,12 @@ def parseThings(things, allLumps, options, stats):
     return thingsList, list(sprites)
 
 
-# Some other graphics helper functions, for drawing
+# Some other functions used in for drawing
 ############################################
 
-# Calculate out file's size and offset to use for WAD's coordinates
 def getImageSizeOffset(vertexes, linedefs, sidedefs, sectors, options):
+    '''Calculate out file's size and offset to use for WAD's coordinates
+    '''
     margins, hCoefX, hCoefY = \
         options["margins"], options["coefX"], options["coefY"]
     minX, minY, maxX, maxY = 100000, 100000, -100000, -100000
@@ -1526,12 +1584,12 @@ def getImageSizeOffset(vertexes, linedefs, sidedefs, sectors, options):
                 -minX + margins, -minY + margins
 
 
-# Given a linedef, find coordinates of a point to start floodfill from
-# it is 1 pixel sideways from linedef's center
-# "right" determines if it sideways means right or left
-# "right" side means if you are looking from Beginning to End of linedef
 def findFloodPoint(linedef, vertexes, right=True):
-
+    ''' Given a linedef, find coordinates of a point to start floodfill from
+    it is 1 pixel sideways from linedef's center
+    "right" determines if it sideways means right or left
+    "right" side means if you are looking from Beginning to End of linedef
+    '''
     # read coordinates from vertexes data, calculate the center
     beg = linedef.beg
     end = linedef.end
@@ -1574,12 +1632,11 @@ def findFloodPoint(linedef, vertexes, right=True):
     return x, y
 
 
-# This is a weird one. But I need it.
-# Basically, you give it two XY coordintes
-# and it returns a list of XY coordinates of a line
-# connecting those two points
-# Used as a part of drawing walls
 def getLinePixels(beg, end):
+    ''' This will be used in the peculiar way we draw walls.
+    Basically, you give it two XY coordintes and it returns a list of
+    XY coordinates of a line connecting those two points
+    '''
     if beg == end:
         return [beg]
     x1, y1 = beg
@@ -1611,10 +1668,11 @@ def getLinePixels(beg, end):
     return pixels
 
 
-# Make a lighting conversion for im image
-# Return image with lightng applied
-# Done through applying mapping from colorConversion
 def lightImage(im, light, colorConversion):
+    ''' Make a lighting conversion for im image
+    Return image with lightng applied
+    Done through applying mapping from colorConversion
+    '''
     px = im.load()
     for i in range(im.size[0]):
         for j in range(im.size[1]):
@@ -1625,14 +1683,14 @@ def lightImage(im, light, colorConversion):
     return im
 
 
-# Apply gamma corretion to an image
-# (in place, so does not return anything)
-# gamma < 1 will lighten the image
-#   by default 0.7 gamma applied to the final image
-#   (as it usually a bit dark)
-# gamma > 1 will darken the image
-#   used for Spectres
 def gammaCorrection(im, gamma):
+    ''' Apply gamma corretion to an image
+    (in place, so does not return anything)
+    gamma < 1 will lighten the image
+    gamma > 1 will darken the image
+    by default 0.7 gamma applied to the final image
+    (as it usually a bit dark)
+    '''
     px = im.load()
     for i in range(im.size[0]):
         for j in range(im.size[1]):
@@ -1648,10 +1706,11 @@ def gammaCorrection(im, gamma):
 # Functions that are used in actual drawing of the final picture
 ################################################################
 
-# Given the Wall object, return wall image
-# That is, texture applied to a rectangle of wall's size
-# Lighting, offsets and "unpegged-ness" are applied here too
 def getWallImage(wall, textures, colorConversion, scaleY, shrink):
+    ''' Given the Wall object, return wall image
+    That is, texture applied to a rectangle of wall's size
+    Lighting, offsets and "unpegged-ness" are applied here too
+    '''
     # Just unpacking data for convenience
     ceiling, floor, sx, sy, ex, ey, texture,\
         xOff, yOff, fromTop, position, light = \
@@ -1699,7 +1758,7 @@ def getWallImage(wall, textures, colorConversion, scaleY, shrink):
             # only repreat once vertically
             if position == "mid" and j != 1:
                 continue
-            
+
             # Two different ways of pasting textures:
             # FromTop (align top of the wall /top of the texture)
             # Used for regular middles, regular bottom and unpegged tops
@@ -1707,7 +1766,7 @@ def getWallImage(wall, textures, colorConversion, scaleY, shrink):
                 im.paste(textim, (i * textim.size[0] - xOff,
                                   j * textim.size[1] - yOff), textim)
             else:
-                if position == "top" or position == "mid":
+                if position in ("top", "mid"):
                     # regular tops and mid-textures (draw from bottom)
                     im.paste(textim, (i * textim.size[0] - xOff,
                              im.size[1] - j * textim.size[1] - yOff - 1), textim)
@@ -1722,12 +1781,13 @@ def getWallImage(wall, textures, colorConversion, scaleY, shrink):
     return im
 
 
-# Draw a wall on a final picture
-# Among other things this function is given "coords":
-# "coords" is 4-point polygon that this wall should fill
-# (all calculations already been done at this point)
 def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
                  colorConversion, options):
+    ''' Draw a wall on a final picture
+    Among other things this function is given "coords":
+    "coords" is 4-point polygon that this wall should fill
+    (all calculations already been done at this point)
+    '''
     hCoefX, hCoefY, scaleY, shrink = \
         options["coefX"], options["coefY"], \
         options["scaleY"], options["shrink"]
@@ -1772,7 +1832,7 @@ def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
         # and front - if viewed from the front
         if wall.position == "mid" and not wall.isBack:
             return
-            
+
     # for walls made from back SideDefs, it is the other way round
     if wall.isBack:
         isTransparent = not isTransparent
@@ -1812,7 +1872,7 @@ def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
                 # if it is transparent - skip it
                 if opacity == 0:
                     continue
-                
+
                 # or 80 for facing away walls
                 if isTransparent:
                     opacity = 80
@@ -1832,11 +1892,11 @@ def pasteWall(bgpx, coords, wall, textures, zBuffer, offsetX, offsetY,
     imres.close()
 
 
-# Make a "transparent" sprite
-# Used for Spectres
-# Reads current image where sprite's pixels are, distorts them and returns
 def makeTransparentSprite(sprite, px2, x, y, colorConversion):
-
+    '''Make a "transparent" sprite
+    Used for Spectres
+    Reads current image where sprite's pixels are, distorts them and returns
+    '''
     # fuzz table, used to distort the background
     # (taken from actual Doom source code)
     fuzz = [1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1,
@@ -1873,9 +1933,10 @@ def makeTransparentSprite(sprite, px2, x, y, colorConversion):
     return spectre
 
 
-# Draw a thing on the final image
 def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
                offsetX, offsetY, colorConversion):
+    ''' Draw a thing on the final image
+    '''
     if thing.sprite not in sprites:
         return
     sprite = sprites[thing.sprite].copy()
@@ -1926,15 +1987,19 @@ def pasteThing(px2, x, y, atHeight, light, thing, sprites, zBuffer,
     sprite.close()
 
 
-# Do the actual drawing
+
 def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
             textures, thingsList, sprites, colorConversion, options):
+    ''' Main drawing function
+    receives all prepared data, returns the image
+    '''
 
-    # do the floodfill in the blueprint image, starting from startPix pixel
-    # also with each drawn pixel add data to sectorData array
-    # (to know which coordinate is part of which sector)
-    # returns False if there is a problem (sector overspils over the boundary)
     def floodFill(sector, startPix):
+        ''' Do the floodfill in the blueprint image, starting from startPix pixel
+        also with each drawn pixel add data to sectorData array
+        (to know which coordinate is part of which sector)
+        returns False if there is a problem (sector overspils over the boundary)
+        '''
         nonlocal im
         nonlocal draw
         nonlocal px
@@ -1967,8 +2032,10 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                     toGo.append(nextPix)
         return True
 
-    # Expand SecorData by 1 pix (to eliminate seams between sectors)
+
     def fillSeams(sectorData):
+        ''' Expand SecorData by 1 pix (to eliminate seams between sectors)
+        '''
         nonlocal im
         nonlocal px
         # Go thorugh pixels on the blueprint, if it is white (border),
@@ -1986,6 +2053,7 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                     if maxNeighbour > -1:
                         sectorData[i, j] = maxNeighbour
                         px[i, j] = (0, 0, 255)
+
 
     # unpack options
     hCoefX, hCoefY, rotate, scaleY = \
@@ -2214,10 +2282,11 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
     return im2
 
 
-# Display map statistics information in the left bottom corner
-# title pic is the pWAD's title image
-# all stat data in stats dictionary
 def drawStats(im, titlepic, stats):
+    ''' Display map statistics information in the left bottom corner
+    title pic is the pWAD's title image
+    all stat data in stats dictionary
+    '''
 
     titleheight = 200
     stats["00Statistics:"] = ""
@@ -2268,9 +2337,10 @@ def drawStats(im, titlepic, stats):
         cur[1] += 20
 
 
-# Base Function: given iWAD, pWAD and Map name, prepare all the data,
-# call the drawing function, save the resulting image
 def generateMapPic(iWAD, options, mapName, pWAD=None):
+    ''' Base Function: given iWAD, pWAD and Map name, prepare all the data,
+    call the drawing function, save the resulting image
+    '''
 
     stats = {}
 
@@ -2288,7 +2358,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
             pData = PK3Data(pWAD)
         else:
             pData = WADData(pWAD)
-            
+
         pData.setMap(mapName)
         zStyle = options["zStyle"]
         vertexesP, linedefsP, sidedefsP, sectorsP, \
@@ -2340,7 +2410,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # Generate walls
     # (more detailed info, neede to draw walls)
     walls = genWalls(vertexes, linedefs, sidedefs, sectors, options)
-    
+
     # get Flats (textures of floors)
     requiredFlats = getListOfFlats(sectors)
     flats = getFlats(iData, requiredFlats, pallete)
@@ -2383,7 +2453,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     # (for example it does not combine L and R)
     # we need the fullest list of options
     allLumps = iData.listOfLumps.copy()
-    if pWAD is not None: 
+    if pWAD is not None:
         allLumps = allLumps.union(pData.listOfLumps)
 
     # Get things / sprites
@@ -2394,7 +2464,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
 
     # Update things / sprites from pWAD
     if pWAD is not None:
-        if thingsList == [] and spriteList == []:
+        if not thingsList and not spriteList:
             thingsList, spriteList = \
                     parseThings(things, allLumps, options, stats)
         spritesP = getPictures(pData, spriteList, pallete)
@@ -2405,7 +2475,7 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
         massResize(sprites, shrink, pallete)
         massResize(textures, shrink, pallete)
         massResizeFlats(flats, shrink, pallete)
-    
+
     # Generate Color Conversion table
     # (Color mapping for different light levels)
     colorConversion = genColorConversion(pallete, colorMap)
@@ -2461,10 +2531,11 @@ def generateMapPic(iWAD, options, mapName, pWAD=None):
     return True
 
 
-# This is the public function, that wraps the basic map drawing function
-# It mainly generates list of maps for "ALL" option
-# and set default options
 def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
+    ''' This is the public function, that wraps the basic map drawing function
+    It mainly generates list of maps for "ALL" option
+    and set default options
+    '''
 
     # Wrap the whole thing in one big try-except,
     # so it will not stop at one broken map,
@@ -2525,16 +2596,17 @@ def wad2pic(iWAD, mapName=None, pWAD=None, options={}):
         genMapWithException(iWAD, mapName, pWAD, options)
 
 
-# Test if the IWAD and PWAD files exist.
-def testFilesExist(options):
 
+def testFilesExist(options):
+    ''' Test if the IWAD and PWAD files exist.
+    '''
     # Test IWAD exists
     filename = options["<iwad>"]
     exists = os.path.isfile(filename)
     if not exists:
         print("IWAD not found: %s" % (filename))
         return exists
-    
+
     # Test PWAD exists (if given)
     if options["<pwad>"] is not None:
         filename = options["<pwad>"]
@@ -2542,21 +2614,24 @@ def testFilesExist(options):
         if not exists:
             print("PWAD not found: %s" % (filename))
             return exists
-    
+
     return True
 
 
 def printLicense(options):
-
-    if options["--license"] == True:
+    ''' if called from CLI and licence parameter
+    '''
+    if options["--license"]:
         print(constants.LICENSE)
         return True
+    return False
 
 
-# Converts the program command arguments to wad2pic options format.
-# This keeps the internal option names backward compatible, it also
-# casts ints and floats to their correct data type.
 def convertDocOptions(options):
+    '''Converts the program command arguments to wad2pic options format.
+    This keeps the internal option names backward compatible, it also
+    casts ints and floats to their correct data type.
+    '''
 
     return {
         "margins": int(options["--margin"]),
@@ -2565,8 +2640,8 @@ def convertDocOptions(options):
         "coefY"  : float(options["--coefy"]),
         "rotate": int(options["--rotate"]),
         "scaleY": float(options["--iso"]),
-        "shrink": int(options["--shrink"]),    
-        "difficulty": int(options["--skill"]),    
+        "shrink": int(options["--shrink"]),
+        "difficulty": int(options["--skill"]),
         "deathmatch": options["--deathmatch"],
         "zStyle": options["--zstyle"],
         "verbose" : not options["--quiet"],
@@ -2575,7 +2650,7 @@ def convertDocOptions(options):
 
 
 if __name__ == "__main__":
-
+    
     # If called directly, assume this is a CLI usage case
     # CLI usage works like this:
 
@@ -2594,9 +2669,9 @@ if __name__ == "__main__":
         else:
             iwad = docOptions["<iwad>"]
             pwad = docOptions["<pwad>"]
-            map = docOptions["<map>"].upper()
+            mapName = docOptions["<map>"].upper()
             options = convertDocOptions(docOptions)
-            wad2pic(iwad, map, pwad, options)
+            wad2pic(iwad, mapName, pwad, options)
     else:
         # Print usage text
         print(docOptions)
