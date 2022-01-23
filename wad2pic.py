@@ -1995,21 +1995,29 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
     receives all prepared data, returns the image
     '''
 
-    def floodFill(sector, startPix):
+    def floodFill(sector, startPix, erase=False):
         ''' Do the floodfill in the blueprint image, starting from startPix pixel
         also with each drawn pixel add data to sectorData array
         (to know which coordinate is part of which sector)
         returns False if there is a problem (sector overspils over the boundary)
+        currColor - color to replace, fillColor - color to fill with.
         '''
         nonlocal im
         nonlocal draw
         nonlocal px
         nonlocal sectorData
 
+        # erase flag is used to roll back overspilt flood fill:
+        # reverse the colors, reset sectorData back to -1
+        if erase:
+            currColor, fillColor = (0, 255, 255), (0, 0, 0)
+        else:
+            currColor, fillColor = (0, 0, 0), (0, 255, 255)
+
         toGo = []
         # if starting point is cyan (already filled) or white (border),
         # don't do anything (it will bypass while and exit)
-        if px[startPix] != (0, 255, 255) and px[startPix] != (255, 255, 255):
+        if px[startPix] == currColor:
             toGo.append(startPix)
 
         # Naive Flood Fill algorithm
@@ -2017,16 +2025,18 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
         # keep doing while list is not empty
         while len(toGo) > 0:
             thisPix = toGo.pop()
-            px[thisPix] = (0, 255, 255)
-            sectorData[thisPix[0], thisPix[1]] = sector
+            px[thisPix] = fillColor
+            if erase:
+                sectorData[thisPix[0], thisPix[1]] = -1
+            else:
+                sectorData[thisPix[0], thisPix[1]] = sector
             for dx, dy in [(-1, 0), (0, -1), (1, 0), (0, 1)]:
                 nextPix = (thisPix[0] + dx, thisPix[1] + dy)
-                # If we reached border, something if wrong, return False
+                # If we reached the border, something if wrong, return False
                 if nextPix[0] < 0 or nextPix[0] == im.size[0] \
                         or nextPix[1] < 0 or nextPix[1] == im.size[1]:
                     return False
-                if px[nextPix] != (0, 255, 255) \
-                        and px[nextPix] != (255, 255, 255) \
+                if px[nextPix] == currColor \
                         and nextPix[0] >= 0 and nextPix[1] >= 0 \
                         and nextPix[0] < im.size[0] \
                         and nextPix[1] < im.size[1]:
@@ -2124,9 +2134,11 @@ def drawMap(vertexes, linedefs, sidedefs, sectors, flats, walls,
                         continue
                     # flood Fill returns False if there is an error, e.g.
                     # it overspills and reaches the border of the image.
-                    # Ignore such sector
+                    # Fill it back to black
                     if not floodFill(sector, (x + offsetX, y + offsetY)):
-                        sectors[sector].HOMpassed = False
+                        # If it returned False, it must have overspilt
+                        # Roll it back by flood-filling it with reverse colors
+                        floodFill(sector, (x + offsetX, y + offsetY), erase=True)
 
     # Not we have a blueprint, with while linedefs and filled sectors
     # We dont need linedefs in the bluprint anymore, besides, they will
